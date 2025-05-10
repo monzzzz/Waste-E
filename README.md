@@ -1,7 +1,14 @@
 # Welcome to Waste-E project
 
 
-To run
+## Setup Instructions
 
-clone the ros-brige repository (https://github.com/carla-simulator/ros-bridge.git)
+```bash
+# Clone the ros-bridge repository
+git clone https://github.com/carla-simulator/ros-bridge.git
+
+# Pull the CARLA Docker image
 docker pull carlasim/carla:0.9.15
+pgsql
+Copy
+Edit
