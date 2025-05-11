@@ -54,7 +54,7 @@ def sensor_callback(sensor_data, sensor_queue, sensor_name):
 def main():
     # We start creating the client
     client = carla.Client('carla_server', 2000, worker_threads=8) # Carla running in a container, host name is the name of the container
-    client.set_timeout(5.0)
+    client.set_timeout(20.0)
     world = client.get_world()
 
     try:
