@@ -8,7 +8,6 @@ services:
     container_name: carla
     runtime: nvidia
     command: ["bash", "./CarlaUE4.sh", "-vulkan", "-quality-level=Low"]
-    runtime: nvidia
 
     environment:
       - DISPLAY=${DISPLAY}
