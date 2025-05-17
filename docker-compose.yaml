@@ -20,6 +20,7 @@ services:
       context: ./docker/ros_carla_bridge/
       dockerfile: Dockerfile
     container_name: carla_ros_bridge
+    network_mode: host
     volumes:
       - carla_ros_workspace:/root/carla-ros-bridge/install
     command: ros2 launch carla_ros_bridge carla_ros_bridge_with_example_ego_vehicle.launch.py host:=carla_server timeout:=20
@@ -36,8 +37,9 @@ services:
       dockerfile: Dockerfile
     container_name: ros2_container
     command: ros2 run ros2_utils list_topics_node
+    network_mode: host
     ports:
-      - "9090:9090"
+      - "9091:9090"
     depends_on: 
       bridge:
         condition: service_started
@@ -52,6 +54,16 @@ services:
     depends_on: 
       bridge:
         condition: service_started
+  
+  rviz2: 
+    image: osrf/ros:foxy-desktop-focal
+    container_name: rviz2
+    network_mode: host
+    environment:
+      - DISPLAY=${DISPLAY}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix
+    command: rviz2
 
   # foxglove to visualize live data 
   # foxglove_bridge:
