@@ -6,6 +6,8 @@ SHELL ["/bin/bash", "-c"]
 
 RUN sudo apt install python3-colcon-common-extensions
 
+RUN apt update && apt install -y ros-foxy-rosbridge-server
+
 # RUN mkdir /ros2_ws
 COPY ros2_ws ros2_ws 
 

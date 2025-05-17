@@ -36,6 +36,8 @@ services:
       dockerfile: Dockerfile
     container_name: ros2_container
     command: ros2 run ros2_utils list_topics_node
+    ports:
+      - "9090:9090"
     depends_on: 
       bridge:
         condition: service_started
@@ -52,29 +54,57 @@ services:
         condition: service_started
 
   # foxglove to visualize live data 
-  foxglove_bridge:
-    build:
-      context: ./docker/foxglove_bridge/
-      dockerfile: Dockerfile
-    volumes: 
-      - carla_ros_workspace:/opt/ros_ws/install
-    ports:
-      - 8765:8765
-    container_name: foxglove_bridge
-    command: ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765
-    restart: always
-    depends_on: 
-      bridge:
-        condition: service_started
+  # foxglove_bridge:
+  #   build:
+  #     context: ./docker/foxglove_bridge/
+  #     dockerfile: Dockerfile
+  #   volumes: 
+  #     - carla_ros_workspace:/opt/ros_ws/install
+  #   ports:
+  #     - 8765:8765
+  #   container_name: foxglove_bridge
+  #   environment:
+  #     - ROS_DOMAIN_ID=0
+  #   command: ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765
+  #   restart: always
+  #   depends_on: 
+  #     bridge:
+  #       condition: service_started
 
-  # Example ros talker node
-  ros_talker:
-    image: osrf/ros:humble-desktop-full
-    command: ros2 run demo_nodes_cpp talker
+  # webviz_bridge:
+  #   build:
+  #     context: ./docker/webviz_bridge/
+  #     dockerfile: Dockerfile
+  #   volumes: 
+  #     - carla_ros_workspace:/opt/ros_ws/install
+  #   ports:
+  #     - 9090:9090
+  #   container_name: webviz_bridge
+  #   environment:
+  #     - ROS_DOMAIN_ID=0
+  #   command: ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+  #   restart: always
+  #   depends_on: 
+  #     bridge:
+  #       condition: service_started
 
-   # Example ros listener node
-  ros_listener:
-    image: osrf/ros:humble-desktop-full
-    command: ros2 run demo_nodes_cpp listener
-    depends_on:
-      - ros_talker
+  
+  # webviz:
+  #   image: cruise/webviz:latest
+  #   container_name: webviz
+  #   ports:
+  #     - 8081:8080
+  #   restart: always
+  
+
+  # # Example ros talker node
+  # ros_talker:
+  #   image: osrf/ros:humble-desktop-full
+  #   command: ros2 run demo_nodes_cpp talker
+
+  #  # Example ros listener node
+  # ros_listener:
+  #   image: osrf/ros:humble-desktop-full
+  #   command: ros2 run demo_nodes_cpp listener
+  #   depends_on:
+  #     - ros_talker

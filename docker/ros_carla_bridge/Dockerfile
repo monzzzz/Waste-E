@@ -13,12 +13,18 @@ WORKDIR /root/carla-ros-bridge
 # TODO: Check versions, should support up to CARLA 0.9.13
 RUN git clone --recurse-submodules https://github.com/carla-simulator/ros-bridge.git src/ros-bridge
 
+RUN rm -rf src/ros-bridge/carla_msgs
+
+RUN git clone https://github.com/carla-simulator/ros-carla-msgs.git src/ros_carla_msgs
+
 RUN rosdep update && rosdep install --from-paths src --ignore-src -r
 
 RUN apt-get install ros-foxy-derived-object-msgs xdg-user-dirs
 
 RUN source /opt/ros/foxy/setup.bash && \
-    colcon build
+    colcon build 
+
+RUN source install/setup.bash
 
 COPY ros_entrypoint.sh /
 
