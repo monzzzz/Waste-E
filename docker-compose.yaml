@@ -10,9 +10,13 @@ services:
     image: carlasim/carla:0.9.13
     container_name: carla_server
     runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - ROS_DOMAIN_ID=0
     ports:
       - 2000-2002:2000-2002
-    command: /bin/bash -c "./CarlaUE4.sh -nosound -carla-server -RenderOffscreen -world-port=2000 -carla-streaming-port=0"
+    command: ["/bin/bash", "-c", "./CarlaUE4.sh -nosound -carla-server -RenderOffscreen"]
 
   # Carla ROS bridge container
   bridge:
@@ -20,10 +24,11 @@ services:
       context: ./docker/ros_carla_bridge/
       dockerfile: Dockerfile
     container_name: carla_ros_bridge
-    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=0
     volumes:
       - carla_ros_workspace:/root/carla-ros-bridge/install
-    command: ros2 launch carla_ros_bridge carla_ros_bridge_with_example_ego_vehicle.launch.py host:=carla_server timeout:=20
+    command: /bin/bash -c "sleep 20 && ros2 launch carla_ros_bridge carla_ros_bridge_with_example_ego_vehicle.launch.py host:=carla_server timeout:=30"
     runtime: nvidia
     restart: always
     depends_on: 
@@ -37,9 +42,10 @@ services:
       dockerfile: Dockerfile
     container_name: ros2_container
     command: ros2 run ros2_utils list_topics_node
-    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=0
     ports:
-      - "9091:9090"
+      - "9090:9090"
     depends_on: 
       bridge:
         condition: service_started
@@ -49,6 +55,8 @@ services:
     build:
       context: ./docker/carla_client_node/
       dockerfile: Dockerfile
+    environment:
+      - ROS_DOMAIN_ID=0
     container_name: carla_client
     restart: always
     depends_on: 
@@ -58,12 +66,14 @@ services:
   rviz2: 
     image: osrf/ros:foxy-desktop-focal
     container_name: rviz2
-    network_mode: host
     environment:
       - DISPLAY=${DISPLAY}
+      - ROS_DOMAIN_ID=0
+      - QT_X11_NO_MITSHM=1
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix
-    command: rviz2
+      - /dev/dri:/dev/dri
+    command: ros2 run rviz2 rviz2
 
   # foxglove to visualize live data 
   # foxglove_bridge:
