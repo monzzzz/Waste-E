@@ -1,0 +1,37 @@
+[0.000000] (-) TimerEvent: {}
+[0.000643] (-) JobUnselected: {'identifier': 'carla_msgs'}
+[0.000717] (-) JobUnselected: {'identifier': 'ros2_utils'}
+[0.000744] (-) JobUnselected: {'identifier': 'sample_pkg'}
+[0.000769] (carla_control_node) JobQueued: {'identifier': 'carla_control_node', 'dependencies': OrderedDict([('carla_msgs', '/root/ros2_ws/install/carla_msgs')])}
+[0.000797] (carla_control_node) JobStarted: {'identifier': 'carla_control_node'}
+[0.099605] (-) TimerEvent: {}
+[0.200050] (-) TimerEvent: {}
+[0.300335] (-) TimerEvent: {}
+[0.400546] (-) TimerEvent: {}
+[0.500727] (-) TimerEvent: {}
+[0.546455] (carla_control_node) Command: {'cmd': ['/usr/bin/python3', 'setup.py', 'egg_info', '--egg-base', '../../build/carla_control_node', 'build', '--build-base', '/root/ros2_ws/build/carla_control_node/build', 'install', '--record', '/root/ros2_ws/build/carla_control_node/install.log', '--single-version-externally-managed'], 'cwd': '/root/ros2_ws/src/carla_control_node', 'env': {'HOSTNAME': '74bd1339f0c0', 'SHLVL': '1', 'LD_LIBRARY_PATH': '/ros2_ws/install/carla_msgs/lib:/opt/ros/foxy/opt/yaml_cpp_vendor/lib:/opt/ros/foxy/opt/rviz_ogre_vendor/lib:/opt/ros/foxy/lib/x86_64-linux-gnu:/opt/ros/foxy/lib', 'HOME': '/root', 'OLDPWD': '/', 'ROS_PYTHON_VERSION': '3', 'COLCON_PREFIX_PATH': '/ros2_ws/install', 'ROS_DISTRO': 'foxy', '_': '/usr/bin/colcon', 'ROS_VERSION': '2', 'ROS_LOCALHOST_ONLY': '0', 'PATH': '/ros2_ws/install/carla_control_node/bin:/opt/ros/foxy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8', 'ROS_DOMAIN_ID': '0', 'AMENT_PREFIX_PATH': '/ros2_ws/install/sample_pkg:/ros2_ws/install/ros2_utils:/ros2_ws/install/carla_control_node:/ros2_ws/install/carla_msgs:/opt/ros/foxy', 'PWD': '/root/ros2_ws/build/carla_control_node', 'LC_ALL': 'C.UTF-8', 'PYTHONPATH': '/root/ros2_ws/build/carla_control_node/prefix_override:/root/ros2_ws/install/carla_control_node/lib/python3.8/site-packages:/ros2_ws/install/sample_pkg/lib/python3.8/site-packages:/ros2_ws/install/ros2_utils/lib/python3.8/site-packages:/ros2_ws/install/carla_control_node/lib/python3.8/site-packages:/ros2_ws/install/carla_msgs/lib/python3.8/site-packages:/opt/ros/foxy/lib/python3.8/site-packages', 'COLCON': '1', 'CMAKE_PREFIX_PATH': '/ros2_ws/install/carla_msgs'}, 'shell': False}
+[0.600867] (-) TimerEvent: {}
+[0.701078] (-) TimerEvent: {}
+[0.709719] (carla_control_node) StdoutLine: {'line': b'running egg_info\n'}
+[0.710072] (carla_control_node) StdoutLine: {'line': b'writing ../../build/carla_control_node/carla_control_node.egg-info/PKG-INFO\n'}
+[0.710330] (carla_control_node) StdoutLine: {'line': b'writing dependency_links to ../../build/carla_control_node/carla_control_node.egg-info/dependency_links.txt\n'}
+[0.710564] (carla_control_node) StdoutLine: {'line': b'writing entry points to ../../build/carla_control_node/carla_control_node.egg-info/entry_points.txt\n'}
+[0.710701] (carla_control_node) StdoutLine: {'line': b'writing requirements to ../../build/carla_control_node/carla_control_node.egg-info/requires.txt\n'}
+[0.710765] (carla_control_node) StdoutLine: {'line': b'writing top-level names to ../../build/carla_control_node/carla_control_node.egg-info/top_level.txt\n'}
+[0.737154] (carla_control_node) StdoutLine: {'line': b"reading manifest file '../../build/carla_control_node/carla_control_node.egg-info/SOURCES.txt'\n"}
+[0.737847] (carla_control_node) StdoutLine: {'line': b"writing manifest file '../../build/carla_control_node/carla_control_node.egg-info/SOURCES.txt'\n"}
+[0.738018] (carla_control_node) StdoutLine: {'line': b'running build\n'}
+[0.738078] (carla_control_node) StdoutLine: {'line': b'running build_py\n'}
+[0.738202] (carla_control_node) StdoutLine: {'line': b'running install\n'}
+[0.738862] (carla_control_node) StdoutLine: {'line': b'running install_lib\n'}
+[0.740020] (carla_control_node) StdoutLine: {'line': b'running install_data\n'}
+[0.740365] (carla_control_node) StdoutLine: {'line': b'running install_egg_info\n'}
+[0.741884] (carla_control_node) StdoutLine: {'line': b"removing '/root/ros2_ws/install/carla_control_node/lib/python3.8/site-packages/carla_control_node-0.0.1-py3.8.egg-info' (and everything under it)\n"}
+[0.742298] (carla_control_node) StdoutLine: {'line': b'Copying ../../build/carla_control_node/carla_control_node.egg-info to /root/ros2_ws/install/carla_control_node/lib/python3.8/site-packages/carla_control_node-0.0.1-py3.8.egg-info\n'}
+[0.743345] (carla_control_node) StdoutLine: {'line': b'running install_scripts\n'}
+[0.757158] (carla_control_node) StdoutLine: {'line': b'Installing control_node script to /root/ros2_ws/install/carla_control_node/bin\n'}
+[0.757370] (carla_control_node) StdoutLine: {'line': b'Installing spawn_node script to /root/ros2_ws/install/carla_control_node/bin\n'}
+[0.757550] (carla_control_node) StdoutLine: {'line': b"writing list of installed files to '/root/ros2_ws/build/carla_control_node/install.log'\n"}
+[0.777001] (carla_control_node) CommandEnded: {'returncode': 0}
+[0.793212] (carla_control_node) JobEnded: {'identifier': 'carla_control_node', 'rc': 0}
+[0.793856] (-) EventReactorShutdown: {}
