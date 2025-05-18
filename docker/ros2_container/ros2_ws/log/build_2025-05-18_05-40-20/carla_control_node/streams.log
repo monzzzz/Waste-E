@@ -1,0 +1,22 @@
+[0.548s] Invoking command in '/root/ros2_ws/src/carla_control_node': PYTHONPATH=/root/ros2_ws/build/carla_control_node/prefix_override:/root/ros2_ws/install/carla_control_node/lib/python3.8/site-packages:${PYTHONPATH} /usr/bin/python3 setup.py egg_info --egg-base ../../build/carla_control_node build --build-base /root/ros2_ws/build/carla_control_node/build install --record /root/ros2_ws/build/carla_control_node/install.log --single-version-externally-managed
+[0.709s] running egg_info
+[0.709s] writing ../../build/carla_control_node/carla_control_node.egg-info/PKG-INFO
+[0.710s] writing dependency_links to ../../build/carla_control_node/carla_control_node.egg-info/dependency_links.txt
+[0.710s] writing entry points to ../../build/carla_control_node/carla_control_node.egg-info/entry_points.txt
+[0.710s] writing requirements to ../../build/carla_control_node/carla_control_node.egg-info/requires.txt
+[0.710s] writing top-level names to ../../build/carla_control_node/carla_control_node.egg-info/top_level.txt
+[0.736s] reading manifest file '../../build/carla_control_node/carla_control_node.egg-info/SOURCES.txt'
+[0.737s] writing manifest file '../../build/carla_control_node/carla_control_node.egg-info/SOURCES.txt'
+[0.737s] running build
+[0.737s] running build_py
+[0.737s] running install
+[0.738s] running install_lib
+[0.739s] running install_data
+[0.740s] running install_egg_info
+[0.741s] removing '/root/ros2_ws/install/carla_control_node/lib/python3.8/site-packages/carla_control_node-0.0.1-py3.8.egg-info' (and everything under it)
+[0.742s] Copying ../../build/carla_control_node/carla_control_node.egg-info to /root/ros2_ws/install/carla_control_node/lib/python3.8/site-packages/carla_control_node-0.0.1-py3.8.egg-info
+[0.743s] running install_scripts
+[0.757s] Installing control_node script to /root/ros2_ws/install/carla_control_node/bin
+[0.757s] Installing spawn_node script to /root/ros2_ws/install/carla_control_node/bin
+[0.757s] writing list of installed files to '/root/ros2_ws/build/carla_control_node/install.log'
+[0.776s] Invoked command in '/root/ros2_ws/src/carla_control_node' returned '0': PYTHONPATH=/root/ros2_ws/build/carla_control_node/prefix_override:/root/ros2_ws/install/carla_control_node/lib/python3.8/site-packages:${PYTHONPATH} /usr/bin/python3 setup.py egg_info --egg-base ../../build/carla_control_node build --build-base /root/ros2_ws/build/carla_control_node/build install --record /root/ros2_ws/build/carla_control_node/install.log --single-version-externally-managed
