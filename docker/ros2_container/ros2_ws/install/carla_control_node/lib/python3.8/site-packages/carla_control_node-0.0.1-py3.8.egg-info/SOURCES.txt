@@ -1,0 +1,13 @@
+package.xml
+setup.py
+../../build/carla_control_node/carla_control_node.egg-info/PKG-INFO
+../../build/carla_control_node/carla_control_node.egg-info/SOURCES.txt
+../../build/carla_control_node/carla_control_node.egg-info/dependency_links.txt
+../../build/carla_control_node/carla_control_node.egg-info/entry_points.txt
+../../build/carla_control_node/carla_control_node.egg-info/requires.txt
+../../build/carla_control_node/carla_control_node.egg-info/top_level.txt
+../../build/carla_control_node/carla_control_node.egg-info/zip-safe
+carla_control_node/__init__.py
+carla_control_node/control_node.py
+carla_control_node/spawn_node.py
+resource/carla_control_node

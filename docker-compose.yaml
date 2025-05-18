@@ -1,0 +1,134 @@
+version: '3.8'
+
+volumes: 
+  carla_ros_workspace:
+
+services:
+
+  # Carla server container
+  carla:
+    image: carlasim/carla:0.9.13
+    container_name: carla_server
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - ROS_DOMAIN_ID=0
+    ports:
+      - 2000-2002:2000-2002
+    command: ["/bin/bash", "-c", "./CarlaUE4.sh -nosound -carla-server -RenderOffscreen"]
+
+  # Carla ROS bridge container
+  bridge:
+    build:
+      context: ./docker/ros_carla_bridge/
+      dockerfile: Dockerfile
+    container_name: carla_ros_bridge
+    environment:
+      - ROS_DOMAIN_ID=0
+    volumes:
+      - carla_ros_workspace:/root/carla-ros-bridge/install
+    command: /bin/bash -c "sleep 20 && ros2 launch carla_ros_bridge carla_ros_bridge_with_example_ego_vehicle.launch.py host:=carla_server timeout:=30"
+    runtime: nvidia
+    restart: always
+    depends_on: 
+      carla:
+        condition: service_started
+
+  # Custom ROS2 container
+  ros2_container:
+    build:
+      context: ./docker/ros2_container/
+      dockerfile: Dockerfile
+    container_name: ros2_container
+    command: /bin/bash -c "cd /ros2_ws  && . /opt/ros/foxy/setup.sh && colcon build && source ./install/setup.bash && python3 -m carla_control_node.control_node && python3 -m carla_control_node.spawn_node"
+
+    environment:
+      - ROS_DOMAIN_ID=0
+    ports:
+      - "9090:9090"
+    depends_on: 
+      bridge:
+        condition: service_started
+
+  # Custom Carla Node
+  carla_client:
+    build:
+      context: ./docker/carla_client_node/
+      dockerfile: Dockerfile
+    environment:
+      - ROS_DOMAIN_ID=0
+    container_name: carla_client
+    restart: always
+    depends_on: 
+      bridge:
+        condition: service_started
+  
+  rviz2: 
+    image: osrf/ros:foxy-desktop-focal
+    container_name: rviz2
+    environment:
+      - DISPLAY=${DISPLAY}
+      - ROS_DOMAIN_ID=0
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /dev/dri:/dev/dri
+      - ${XAUTHORITY:-~/.Xauthority}:/root/.Xauthority
+    command: ros2 run rviz2 rviz2
+
+  # foxglove to visualize live data 
+  # foxglove_bridge:
+  #   build:
+  #     context: ./docker/foxglove_bridge/
+  #     dockerfile: Dockerfile
+  #   volumes: 
+  #     - carla_ros_workspace:/opt/ros_ws/install
+  #   ports:
+  #     - 8765:8765
+  #   container_name: foxglove_bridge
+  #   environment:
+  #     - ROS_DOMAIN_ID=0
+  #   command: ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765
+  #   restart: always
+  #   depends_on: 
+  #     bridge:
+  #       condition: service_started
+
+  # webviz_bridge:
+  #   build:
+  #     context: ./docker/webviz_bridge/
+  #     dockerfile: Dockerfile
+  #   volumes: 
+  #     - carla_ros_workspace:/opt/ros_ws/install
+  #   ports:
+  #     - 9090:9090
+  #   container_name: webviz_bridge
+  #   environment:
+  #     - ROS_DOMAIN_ID=0
+  #   command: ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+  #   restart: always
+  #   depends_on: 
+  #     bridge:
+  #       condition: service_started
+
+  
+  # webviz:
+  #   image: cruise/webviz:latest
+  #   container_name: webviz
+  #   ports:
+  #     - 8081:8080
+  #   restart: always
+  
+
+  # # Example ros talker node
+  # ros_talker:
+  #   image: osrf/ros:humble-desktop-full
+  #   command: ros2 run demo_nodes_cpp talker
+
+  #  # Example ros listener node
+  # ros_listener:
+  #   image: osrf/ros:humble-desktop-full
+  #   command: ros2 run demo_nodes_cpp listener
+  #   depends_on:
+  #     - ros_talker

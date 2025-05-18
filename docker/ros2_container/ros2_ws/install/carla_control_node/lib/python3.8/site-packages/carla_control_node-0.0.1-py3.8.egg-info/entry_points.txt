@@ -1,0 +1,4 @@
+[console_scripts]
+control_node = carla_control_node.control_node:main
+spawn_node = carla_control_node.spawn_node:main
+
