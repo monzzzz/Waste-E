@@ -1,4 +1,5 @@
 package.xml
+setup.cfg
 setup.py
 ../../build/carla_control_node/carla_control_node.egg-info/PKG-INFO
 ../../build/carla_control_node/carla_control_node.egg-info/SOURCES.txt

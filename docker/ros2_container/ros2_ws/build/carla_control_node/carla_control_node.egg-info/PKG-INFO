@@ -1,9 +1,9 @@
 Metadata-Version: 1.2
 Name: carla-control-node
 Version: 0.0.1
-Summary: CARLA vehicle control package
+Summary: CARLA vehicle control and spawn nodes
 Home-page: UNKNOWN
-Maintainer: your_name
+Maintainer: Elmond
 Maintainer-email: elmond.pattanan@gmail.com
 License: Apache License 2.0
 Description: UNKNOWN
