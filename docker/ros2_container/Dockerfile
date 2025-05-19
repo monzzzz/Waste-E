@@ -6,6 +6,10 @@ SHELL ["/bin/bash", "-c"]
 
 RUN sudo apt install python3-colcon-common-extensions
 
+COPY carla-0.9.13-py3.7-linux-x86_64.egg /opt/carla/
+
+ENV PYTHONPATH="/opt/carla/carla-0.9.13-py3.7-linux-x86_64.egg:${PYTHONPATH:+$PYTHONPATH}"
+
 RUN apt update && apt install -y ros-foxy-rosbridge-server
 
 # RUN mkdir /ros2_ws

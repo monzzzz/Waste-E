@@ -15,9 +15,16 @@ class VehicleSpawner(Node):
         self.world = self.client.get_world()
         self.blueprint_library = self.world.get_blueprint_library()
         
-        # Timer for spawn logic
-        self.timer = self.create_timer(1.0, self.spawn_vehicle)
+        # Initialize waypoint variables
+        self.waypoints = []
+        self.current_wp_index = 0
         self.vehicle = None
+    
+        # First spawn vehicle, then start following waypoints
+        self.spawn_vehicle()
+        if self.vehicle:
+            self.generate_sidewalk_path()
+            self.timer = self.create_timer(0.1, self.follow_waypoints)
 
     def spawn_vehicle(self):
         if self.vehicle is not None:
@@ -66,6 +73,105 @@ class VehicleSpawner(Node):
             # self.vehicle.set_autopilot(True)
         except Exception as e:
             self.get_logger().error(f"Failed to spawn vehicle: {e}")
+
+    def generate_sidewalk_path(self):
+        """Generate a path of waypoints on the sidewalk."""
+        if not self.vehicle:
+            self.get_logger().error("No vehicle to generate path for!")
+            return
+            
+        # Get vehicle's current waypoint
+        current_location = self.vehicle.get_location()
+        current_wp = self.world.get_map().get_waypoint(
+            current_location, 
+            lane_type=carla.LaneType.Sidewalk,
+            project_to_road=True
+        )
+        
+        if not current_wp:
+            self.get_logger().error("Could not find a sidewalk waypoint near the vehicle!")
+            return
+        
+        # Generate 100 waypoints ahead, staying on sidewalk
+        self.waypoints = []
+        next_wp = current_wp
+        
+        for _ in range(100):
+            # Get next waypoint, 2 meters ahead
+            next_waypoints = next_wp.next(2.0)
+            if not next_waypoints or next_waypoints[0].lane_type != carla.LaneType.Sidewalk:
+                # Try to find another sidewalk nearby
+                alternative_wps = next_wp.get_right_lane()
+                if alternative_wps and alternative_wps.lane_type == carla.LaneType.Sidewalk:
+                    next_wp = alternative_wps
+                else:
+                    # No more sidewalk ahead, end the path
+                    break
+            else:
+                next_wp = next_waypoints[0]
+                
+            self.waypoints.append(next_wp)
+        
+        self.get_logger().info(f"Generated {len(self.waypoints)} sidewalk waypoints")
+        self.current_wp_index = 0
+
+
+    def follow_waypoints(self):
+        """Follow the generated sidewalk waypoints."""
+        if not self.vehicle or not self.waypoints:
+            return
+            
+        if self.current_wp_index >= len(self.waypoints):
+            self.get_logger().info("Reached the end of the waypoints.")
+            self.vehicle.apply_control(carla.VehicleControl(throttle=0, brake=1.0))
+            return
+        
+        target_wp = self.waypoints[self.current_wp_index]
+        vehicle_loc = self.vehicle.get_location()
+        target_loc = target_wp.transform.location
+
+        # Calculate direction vector to target
+        direction = carla.Vector3D(
+            x=target_loc.x - vehicle_loc.x,
+            y=target_loc.y - vehicle_loc.y,
+            z=0
+        )
+        
+        # Normalize the direction vector
+        distance = direction.length()
+        if distance > 0.1:
+            direction.x /= distance
+            direction.y /= distance
+        
+        # Get vehicle's forward vector
+        forward = self.vehicle.get_transform().get_forward_vector()
+        
+        # Calculate steering (dot product and cross product)
+        dot = forward.x * direction.x + forward.y * direction.y
+        cross = forward.x * direction.y - forward.y * direction.x
+        
+        # Convert to steering value (-1 to 1)
+        steer = min(max(cross * 2.0, -1.0), 1.0)
+        
+        # Adjust speed based on steering angle and distance
+        throttle = 0.5
+        if abs(steer) > 0.2:
+            throttle = 0.3  # Slow down for turns
+        
+        # Move to next waypoint when close enough
+        if distance < 1.0:
+            self.current_wp_index += 1
+            self.get_logger().info(f"Reached waypoint {self.current_wp_index-1}, moving to next one")
+        
+        # Apply control
+        control = carla.VehicleControl()
+        control.throttle = throttle
+        control.steer = steer
+        control.brake = 0.0
+        
+        self.vehicle.apply_control(control)
+
+
 
 def main(args=None):
     rclpy.init(args=args)
