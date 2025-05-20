@@ -28,21 +28,39 @@ services:
       - ROS_DOMAIN_ID=0
     volumes:
       - carla_ros_workspace:/root/carla-ros-bridge/install
-    command: /bin/bash -c "sleep 20 && ros2 launch carla_ros_bridge carla_ros_bridge_with_example_ego_vehicle.launch.py host:=carla_server timeout:=30"
+    command: >
+      ros2 launch carla_ros_bridge carla_ros_bridge.launch.py host:=carla_server timeout:=30 synchronous_mode:=True fixed_delta_seconds:=0.05
     runtime: nvidia
     restart: always
-    depends_on: 
+    depends_on:
       carla:
         condition: service_started
 
+  carla_spawn_objects:
+    build:
+      context: ./docker/ros_carla_bridge/
+      dockerfile: Dockerfile
+    container_name: carla_spawn_objects
+    environment:
+      - ROS_DOMAIN_ID=0
+    volumes:
+      - carla_ros_workspace:/root/carla-ros-bridge/install
+      - ./docker/ros_carla_bridge/pedestrians.json:/pedestrians.json
+    command: >
+      bash -c "sleep 30 && ros2 launch carla_spawn_objects carla_spawn_objects.launch.py objects_definition_file:=/pedestrians.json"
+    depends_on:
+      - bridge
+    restart: "no"
   # Custom ROS2 container
   ros2_container:
     build:
       context: ./docker/ros2_container/
       dockerfile: Dockerfile
     container_name: ros2_container
-    command: /bin/bash -c "cd /ros2_ws  && . /opt/ros/foxy/setup.sh && colcon build && source ./install/setup.bash && python3 -m carla_control_node.spawn_node"
-
+    command: >
+      /bin/bash -c "source /opt/ros/foxy/setup.bash && 
+      source /ros2_ws/install/setup.bash && 
+      ros2 launch carla_control_node pedestrian_camera.launch.py"
     environment:
       - ROS_DOMAIN_ID=0
     ports:
@@ -52,18 +70,19 @@ services:
         condition: service_started
 
   # Custom Carla Node
-  carla_client:
-    build:
-      context: ./docker/carla_client_node/
-      dockerfile: Dockerfile
-    environment:
-      - ROS_DOMAIN_ID=0
-    container_name: carla_client
-    restart: always
-    depends_on: 
-      bridge:
-        condition: service_started
+  # carla_client:
+  #   build:
+  #     context: ./docker/carla_client_node/
+  #     dockerfile: Dockerfile
+  #   environment:
+  #     - ROS_DOMAIN_ID=0
+  #   container_name: carla_client
+  #   restart: always
+  #   depends_on: 
+  #     bridge:
+  #       condition: service_started
   
+  # Add a volume to share the RViz config
   rviz2: 
     image: osrf/ros:foxy-desktop-focal
     container_name: rviz2
@@ -75,7 +94,11 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix
       - /dev/dri:/dev/dri
       - ${XAUTHORITY:-~/.Xauthority}:/root/.Xauthority
-    command: ros2 run rviz2 rviz2
+      - ./docker/ros2_container/ros2_ws/src/carla_control_node/rviz:/rviz_config
+    command: bash -c "sleep 30 && ros2 run rviz2 rviz2 -d /rviz_config/pedestrian_view.rviz"
+    depends_on:
+      ros2_container:
+        condition: service_started
 
   # foxglove to visualize live data 
   # foxglove_bridge:
