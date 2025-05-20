@@ -9,9 +9,9 @@ import time
 import subprocess
 
 
-class CarlaBridgeController(Node):
+class Pedestrian(Node):
     def __init__(self):
-        super().__init__('carla_bridge_controller')
+        super().__init__('pedestrian')
         self.get_logger().info("CARLA Bridge Controller Node started - DEBUG MODE")
         
         # Create republisher for camera images
@@ -176,7 +176,7 @@ class CarlaBridgeController(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = CarlaBridgeController()
+    node = Pedestrian()
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()

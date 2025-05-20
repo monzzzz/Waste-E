@@ -22,7 +22,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'carla_bridge_controller = carla_control_node.carla_bridge_controller:main',
+            'pedestrian = carla_control_node.pedestrian:main',
+            'pedestrian_controller = carla_control_node.pedestrian_controller:main',
         ],
     },
 )

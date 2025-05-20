@@ -11,15 +11,24 @@ def generate_launch_description():
     ld = LaunchDescription()
     
     # Add the carla_bridge_controller node
-    node = Node(
+    camera_bridge_node = Node(
         package='carla_control_node',
-        executable='carla_bridge_controller',
-        name='carla_bridge_controller',
+        executable='pedestrian',
+        name='pedestrian',
         output='screen',
         emulate_tty=True
     )
+
+    walker_controller_node = Node(
+        package='carla_control_node',
+        executable='pedestrian_controller',
+        name='pedestrian_controller',
+        output='screen',
+        emulate_tty=True,
+    )
     
     # Add the node to the launch description
-    ld.add_action(node)
-    
+    ld.add_action(camera_bridge_node)
+    ld.add_action(walker_controller_node)
+
     return ld
