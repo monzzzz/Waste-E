@@ -10,13 +10,22 @@ COPY carla-0.9.13-py3.7-linux-x86_64.egg /opt/carla/
 
 ENV PYTHONPATH="/opt/carla/carla-0.9.13-py3.7-linux-x86_64.egg:${PYTHONPATH:+$PYTHONPATH}"
 
-RUN apt update && apt install -y ros-foxy-rosbridge-server
+RUN apt update && apt install -y ros-foxy-rosbridge-server \
+    ros-foxy-carla-msgs \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /ros2_ws
+RUN mkdir -p src
+WORKDIR /ros2_ws/src
+RUN git clone https://github.com/carla-simulator/ros-carla-msgs.git
 
 # RUN mkdir /ros2_ws
-COPY ros2_ws ros2_ws 
+COPY ros2_ws/src ros2_ws/src 
 
-RUN cd ros2_ws && \
-    source /opt/ros/foxy/setup.bash && \
+WORKDIR /ros2_ws
+
+RUN source /opt/ros/foxy/setup.bash && \
     colcon build
 
 COPY ./ros_entrypoint.sh /
