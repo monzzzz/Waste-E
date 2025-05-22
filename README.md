@@ -31,7 +31,13 @@ This will launch:
 
 Make sure your environment supports GPU rendering (or offscreen mode if on a headless server).
 
-### 2. Segmentation Model (Supervised Learning)
+### 2. UniAD (https://github.com/OpenDriveLab/UniAD)
+
+To download every required file
+
+```bash
+./data_download.sh
+```
 
 ---
 
