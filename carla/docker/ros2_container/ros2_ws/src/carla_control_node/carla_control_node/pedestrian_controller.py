@@ -8,6 +8,7 @@ import time
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Bool, Float32
 
+
 class PedestrianController(Node):
     def __init__(self):
         super().__init__('pedestrian_controller')

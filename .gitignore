@@ -1,0 +1,13 @@
+# carla
+
+./carla/ros-bridge
+./carla/docker/ros2_container/ros2_ws/build/
+./carla/docker/ros2_container/ros2_ws/install/
+./carladocker/ros2_container/ros2_ws/log/
+./carla/*.pyc
+./carla/__pycache__/
+
+
+# ai
+
+./self-driving/uni-ad/.env

@@ -24,6 +24,7 @@ setup(
         'console_scripts': [
             'pedestrian = carla_control_node.pedestrian:main',
             'pedestrian_controller = carla_control_node.pedestrian_controller:main',
+            'map_visualizer = carla_control_node.map_visualizer:main',
         ],
     },
 )
