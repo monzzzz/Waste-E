@@ -11,7 +11,7 @@ def generate_launch_description():
     ld = LaunchDescription()
     
     # Add the carla_bridge_controller node
-    camera_bridge_node = Node(
+    pedestrian_node = Node(
         package='carla_control_node',
         executable='pedestrian',
         name='pedestrian',
@@ -19,16 +19,25 @@ def generate_launch_description():
         emulate_tty=True
     )
 
-    walker_controller_node = Node(
+    pedestrian_controller_node = Node(
         package='carla_control_node',
         executable='pedestrian_controller',
         name='pedestrian_controller',
         output='screen',
         emulate_tty=True,
     )
+
+    map_visualizer_node = Node(
+        package='carla_control_node',
+        executable='map_visualizer',
+        name='map_visualizer',
+        output='screen',
+        emulate_tty=True,
+    )
     
     # Add the node to the launch description
-    ld.add_action(camera_bridge_node)
-    ld.add_action(walker_controller_node)
+    ld.add_action(pedestrian_node)
+    ld.add_action(pedestrian_controller_node)
+    ld.add_action(map_visualizer_node)
 
     return ld

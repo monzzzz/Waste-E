@@ -3,7 +3,7 @@
     {
       "type": "walker.pedestrian.0001",
       "id": "pedestrian_1",
-      "spawn_point": {"x": 100.0, "y": 10.0, "z": 0.5, "roll": 0.0, "pitch": 0.0, "yaw": 0.0},
+      "spawn_point": {"x": 0.0, "y": 10.0, "z": 0.5, "roll": 0.0, "pitch": 0.0, "yaw": 0.0},
       "animate": true,
       "control": false,
       "sensors":[

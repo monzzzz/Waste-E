@@ -1,7 +1,0 @@
-./ros-bridge
-./# ROS 2 build files
-docker/ros2_container/ros2_ws/build/
-docker/ros2_container/ros2_ws/install/
-docker/ros2_container/ros2_ws/log/
-*.pyc
-__pycache__/

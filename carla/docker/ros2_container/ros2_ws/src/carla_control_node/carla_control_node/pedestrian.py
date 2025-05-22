@@ -21,7 +21,7 @@ class Pedestrian(Node):
             10
         )
         
-        # Set up bridge for image conversion
+        # Set up bridge for image cnversion
         self.bridge = CvBridge()
         
         # Track if any images have been received
@@ -63,7 +63,6 @@ class Pedestrian(Node):
                                   f"encoding={image.encoding}, " +
                                   f"frame_id={image.header.frame_id}")
             
-            # Update frame ID and publish
             image.header.frame_id = "map"
             image.header.stamp = self.get_clock().now().to_msg()
             self.image_pub.publish(image)
@@ -143,36 +142,7 @@ class Pedestrian(Node):
                 self.get_logger().warn("NO CARLA STATUS available - bridge may not be connected!")
                 
         except Exception as e:
-            self.get_logger().error(f"Error checking CARLA status: {e}")
-
-    def publish_test_image(self):
-        """Publish a test image to verify RViz configuration"""
-        try:
-            # Only publish test image if no real images received recently
-            if self.images_received == 0 or (time.time() - self.last_image_time) > 5.0:
-                # Create test image
-                test_img = np.ones((480, 640, 3), dtype=np.uint8) * 200  # Light gray
-                
-                # Add rectangle
-                cv2.rectangle(test_img, (50, 50), (590, 430), (0, 0, 255), 5)
-                
-                # Add text with current time
-                timestamp = time.time()
-                cv2.putText(test_img, "TEST IMAGE - NO REAL CAMERA DATA", 
-                           (100, 200), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
-                cv2.putText(test_img, f"Time: {timestamp:.1f}", 
-                           (100, 250), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
-                
-                # Convert to ROS Image
-                ros_img = self.bridge.cv2_to_imgmsg(test_img, encoding="bgr8")
-                ros_img.header.stamp = self.get_clock().now().to_msg()
-                ros_img.header.frame_id = "map"
-                
-                # Publish test image
-                self.image_pub.publish(ros_img)
-                self.get_logger().info("Published test image (no real camera data available)")
-        except Exception as e:
-            self.get_logger().error(f"Error publishing test image: {e}")    
+            self.get_logger().error(f"Error checking CARLA status: {e}")   
 
 def main(args=None):
     rclpy.init(args=args)
