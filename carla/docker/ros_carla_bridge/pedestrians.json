@@ -1,0 +1,21 @@
+{
+  "objects": [
+    {
+      "type": "walker.pedestrian.0001",
+      "id": "pedestrian_1",
+      "spawn_point": {"x": 0.0, "y": 10.0, "z": 0.5, "roll": 0.0, "pitch": 0.0, "yaw": 0.0},
+      "animate": true,
+      "control": false,
+      "sensors":[
+          {
+        "type": "sensor.camera.rgb",
+        "id": "pedestrian_camera",
+        "spawn_point": {"x": 0.0, "y": 0.0, "z": 0.5, "roll": 0.0, "pitch": 0.0, "yaw": 0.0},
+        "image_size_x": 800,
+        "image_size_y": 600,
+        "fov": 90.0
+      }
+      ] 
+    }
+  ]
+}
