@@ -5,6 +5,7 @@ import numpy as np
 from pathlib import Path
 from path_planner import PathPlanner
 from navigation_controller import NavigationController
+from tile_basemap import TileBasemap
 
 
 class PathSimulator:
@@ -28,6 +29,9 @@ class PathSimulator:
         self.area_polygon = area_polygon
         self.roads_in_area = roads_in_area
         
+        # Load Google Maps tiles
+        self.tile_basemap = TileBasemap()
+        
         # Create navigation controller
         self.nav_controller = NavigationController(coverage_path)
         
@@ -47,6 +51,13 @@ class PathSimulator:
     def setup_plot(self):
         """Setup the matplotlib figure and axes."""
         self.fig, self.ax = plt.subplots(figsize=(16, 12))
+        
+        # Add Google Maps satellite basemap first
+        if self.tile_basemap.tiles:
+            print(f"Adding {len(self.tile_basemap.tiles)} satellite tiles to simulation...")
+            self.tile_basemap.add_to_plot(self.ax, alpha=0.7)
+        else:
+            print("No satellite tiles found. Run download_map_tiles.py first.")
         
         # Plot full road network in background (if available)
         if self.planner is not None:
