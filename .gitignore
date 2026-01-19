@@ -12,5 +12,5 @@ carla/__pycache__/
 
 ai/self-driving/uni-ad/.env
 ai/self-driving/nvidia-alpamayo/map/data/
-ai/self-driving/nvidia-alpamayo/__pycache__/
-ai/self-driving/nvidia-alpamayo/nvidia-alpamayo-map/
+ai/self-driving/nvidia-alpamayo/map/__pycache__/
+ai/self-driving/nvidia-alpamayo/map/nvidia-alpamayo-map/
