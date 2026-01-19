@@ -13,6 +13,6 @@ carla/__pycache__/
 ai/self-driving/uni-ad/.env
 ai/path-planning/data/
 ai/path-planning/__pycache__/
-ai/self-driving/nvidia-alpamayo/map/nvidia-alpamayo-map/
+ai/path-planning/nvidia-alpamayo-map/
 ai/garbage-detection/garbage-detection
 ai/garbage-detection/__pycache__/
