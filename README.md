@@ -2,6 +2,70 @@
 
 Waste-E is an AI-powered robotic system built using CARLA Simulator and ROS2, designed to autonomously drive along sidewalks and collect garbage in defined Areas of Interest (AOIs). It can be monitored and controlled via a connected application.
 
+## 🏗️ System Architecture
+
+The Waste-E robot operates using a hierarchical autonomous pipeline:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        PATH PLANNING                             │
+│  • Load road network from shapefile                             │
+│  • Select coverage area interactively                           │
+│  • Generate optimal path to cover all roads                     │
+│  • Export waypoints for navigation                              │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      SELF-DRIVING MODE                           │
+│  • Follow planned path waypoints                                │
+│  • Monitor GPS location and heading                             │
+│  • Execute turn-by-turn navigation commands                     │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     OBJECT DETECTION                             │
+│  • Monitor 3 cameras (Front, Left, Right)                       │
+│  • Run YOLOv8 garbage detection                                 │
+│  • Calculate motor speeds based on detection                    │
+└────────┬────────────────────────────────────┬───────────────────┘
+         │                                    │
+    [DETECTED]                          [NO DETECTION]
+         │                                    │
+         ▼                                    ▼
+┌────────────────────────┐          ┌─────────────────────┐
+│  APPROACH GARBAGE      │          │  CONTINUE PATH      │
+│  • Center target       │          │  • Return to        │
+│  • Move forward        │          │    waypoint         │
+│  • Adjust heading      │          │    following        │
+└──────────┬─────────────┘          └─────────────────────┘
+           │
+           ▼
+┌────────────────────────┐
+│  PICK UP GARBAGE       │
+│  • Stop at target      │
+│  • Activate gripper    │
+│  • Collect item        │
+└──────────┬─────────────┘
+           │
+           ▼
+┌────────────────────────┐
+│  RETURN TO PATH        │
+│  • Resume navigation   │
+│  • Continue coverage   │
+└────────────────────────┘
+```
+
+### Key Components
+
+1. **Path Planning (`ai/path-planning/`)**: Interactive tool to select coverage area and generate optimal routes using road network data
+2. **Garbage Detection (`ai/garbage-detection/`)**: YOLOv8-based detection system that processes 3 camera feeds and outputs motor commands
+3. **Hardware Control (`hardware/`)**: Low-level motor, GPS, IMU, and sensor interfaces for the physical robot
+4. **Navigation Controller**: Translates waypoints into turn-by-turn directions based on current position and heading
+
+---
+
 ## 🔧 Technologies Used
 
 * [CARLA Simulator](https://carla.org/) v0.9.13
