@@ -14,3 +14,5 @@ ai/self-driving/uni-ad/.env
 ai/self-driving/nvidia-alpamayo/map/data/
 ai/self-driving/nvidia-alpamayo/map/__pycache__/
 ai/self-driving/nvidia-alpamayo/map/nvidia-alpamayo-map/
+ai/garbage-detection/garbage-detection
+ai/garbage-detection/__pycache__/
