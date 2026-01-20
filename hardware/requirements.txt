@@ -1,0 +1,18 @@
+# Hardware control libraries for Orange Pi
+OrangePi.GPIO>=0.5.0
+smbus2>=0.4.0
+
+# GPS module
+pyserial>=3.5
+pynmea2>=1.18.0
+
+# IMU sensor (BNO055)
+adafruit-circuitpython-bno055>=5.4.0
+adafruit-blinka>=8.0.0
+
+# Standard libraries (usually pre-installed, but listed for completeness)
+# typing - Built-in Python 3.5+
+# time - Built-in
+# json - Built-in
+# socket - Built-in
+# threading - Built-in
