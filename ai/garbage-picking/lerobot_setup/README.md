@@ -16,7 +16,7 @@ The code you mentioned is indeed from the LeRobot library - it's the core `LeRob
 - `collect_data.py` - Basic data collection script with dummy data (for testing)
 - `collect_real_robot_data.py` - Real robot data collection with camera and sensors
 - `data_structure.py` - (Your file) Can be used for custom dataset utilities
-- `setup.py` - (Your file) Can be used for installation/setup scripts
+- `setup.py` - (Your file)Can be used for installation/setup scripts
 
 ## Installation
 
@@ -157,9 +157,19 @@ features = {
    ```
 
 3. **Collect Episodes**
+
+    ```
+    lerobot-teleoperate --robot.type=so101_follower --robot.port=/dev/ttyACM0 --robot.id=so101_follower_v1 --teleop.type=so101_leader --teleop.port=/dev/ttyACM1 --teleop.id=so101_leader_v1
+    ```
+    
+    ```
+    lerobot-record   --robot.type=so101_follower   --robot.port=/dev/ttyACM0   --robot.id=my_awesome_follower_arm   --robot.cameras='{"front":{"type":"opencv","index_or_path":4,"width":1280,"height":720,"fps":10,"warmup_s":5},"top":{"type":"opencv","index_or_path":6,"width":1280,"height":720,"fps":10,"warmup_s":5},"wrist":{"type":"opencv","index_or_path":2,"width":1280,"height":720,"fps":10,"warmup_s":5}}'   --teleop.type=so101_leader   --teleop.port=/dev/ttyACM1   --teleop.id=garbage-picker-v1   --display_data=true   --dataset.repo_id=Monzzz/garbage-picker-v1-2   --dataset.num_episodes=3   --dataset.single_task="Grab the object in front of you and place it in the bin behind you."
+    ```
+
    - Start the collection script
    - Perform robot demonstrations (teleoperation)
    - Data is automatically saved
+
 
 4. **Verify Dataset**
    ```python
