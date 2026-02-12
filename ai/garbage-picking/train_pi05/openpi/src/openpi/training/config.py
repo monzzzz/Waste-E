@@ -19,6 +19,7 @@ import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
+import openpi.policies.garbage_picker_policy as garbage_picker_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
@@ -420,6 +421,58 @@ class RLDSDroidDataConfig(DataConfigFactory):
             rlds_data_dir=self.rlds_data_dir,
             action_space=self.action_space,
             datasets=self.datasets,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class GarbagePickerDataConfig(DataConfigFactory):
+    """Config for garbage-picker-v1-2 dataset with SO-100 follower arm."""
+
+    # If provided, will be injected into the input data if the "prompt" key is not present.
+    default_prompt: str | None = "pick up the garbage"
+
+    # Repack transforms to map your dataset keys to expected format
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+        default=_transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "images": {
+                            "front": "observation.images.front",
+                            "top": "observation.images.top",
+                            "wrist": "observation.images.wrist",
+                        },
+                        "state": "observation.state",
+                        "actions": "action",
+                    }
+                )
+            ]
+        )
+    )
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # Data transforms using the custom garbage picker policy transforms
+        # The delta mask converts first 5 dimensions (joints) to deltas, keeps gripper absolute
+        delta_action_mask = _transforms.make_bool_mask(5, -1)
+        data_transforms = _transforms.Group(
+            inputs=[
+                garbage_picker_policy.GarbagePickerInputs(),
+                _transforms.DeltaActions(delta_action_mask),
+            ],
+            outputs=[
+                _transforms.AbsoluteActions(delta_action_mask),
+                garbage_picker_policy.GarbagePickerOutputs(),
+            ],
+        )
+
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
         )
 
 
@@ -931,8 +984,23 @@ _CONFIGS = [
         num_train_steps=20_000,
     ),
     #
-    # Debugging configs.
+    # Garbage Picker configs
     #
+    TrainConfig(
+        name="pi05_garbage_picker",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=6,
+            action_horizon=15,
+        ),
+        data=GarbagePickerDataConfig(
+            repo_id="Monzzz/garbage-picker-v1-2",
+            default_prompt="Grab the object in front of you and place it in the bin behind you",
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=5_000,
+    ),
+
     TrainConfig(
         name="debug",
         data=FakeDataConfig(),
