@@ -16,3 +16,8 @@ ai/path-planning/__pycache__/
 ai/path-planning/nvidia-alpamayo-map/
 ai/garbage-detection/garbage-detection
 ai/garbage-detection/__pycache__/
+ai/garbage-picking/lerobot_setup/.lerobot
+ai/garbage-picking/lerobot_setup/.lerobot_setup
+
+
+
