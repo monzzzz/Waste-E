@@ -181,13 +181,97 @@ class Unnormalize(DataTransformFn):
         return (x + 1.0) / 2.0 * (q99 - q01 + 1e-6) + q01
 
 
+
 @dataclasses.dataclass(frozen=True)
 class ResizeImages(DataTransformFn):
+    """Resize + pad all image streams to (height, width).
+
+    Expects `data["image"]` to be a dict:
+      {camera_key: sequence_of_frames}
+    where each frame is either:
+      - np.ndarray (H,W) or (H,W,C) or (C,H,W)
+      - torch.Tensor in similar shapes
+    """
+
     height: int
     width: int
 
+    @staticmethod
+    def _to_hwc_uint8(im: Any) -> np.ndarray:
+        # torch -> numpy
+        if isinstance(im, torch.Tensor):
+            im = im.detach().cpu().numpy()
+
+        im = np.asarray(im)
+
+        # remove (1, ...) batch dim
+        if im.ndim == 4 and im.shape[0] == 1:
+            im = im[0]
+
+        # squeeze useless singleton dims (avoid turning image into 1D)
+        im = np.squeeze(im)
+        if im.ndim == 1:
+            raise ValueError(f"Bad image shape (became 1D): {im.shape}")
+
+        # CHW -> HWC (common if decoded as tensor)
+        if im.ndim == 3 and im.shape[0] in (1, 3, 4) and im.shape[-1] not in (1, 3, 4):
+            im = np.transpose(im, (1, 2, 0))
+
+        # HxW -> HxWx1
+        if im.ndim == 2:
+            im = im[:, :, None]
+
+        # HxWx1 -> HxWx3
+        if im.ndim == 3 and im.shape[2] == 1:
+            im = np.repeat(im, 3, axis=2)
+
+        # RGBA -> RGB
+        if im.ndim == 3 and im.shape[2] == 4:
+            im = im[:, :, :3]
+
+        # final check
+        if not (im.ndim == 3 and im.shape[2] == 3):
+            raise ValueError(f"Unexpected final image shape: {im.shape}, dtype={im.dtype}")
+
+        # Convert float -> uint8
+        if im.dtype != np.uint8:
+            if np.issubdtype(im.dtype, np.floating):
+                mx = float(np.max(im)) if im.size else 1.0
+                # assume 0..1 floats
+                if mx <= 1.5:
+                    im = im * 255.0
+            im = np.clip(im, 0, 255).astype(np.uint8)
+
+        return im
+
     def __call__(self, data: DataDict) -> DataDict:
-        data["image"] = {k: image_tools.resize_with_pad(v, self.height, self.width) for k, v in data["image"].items()}
+        if "image" not in data or data["image"] is None:
+            return data
+
+        new_images: Dict[str, np.ndarray] = {}
+
+        for k, frames in data["image"].items():
+            # frames can be list/tuple, or already a numpy array / tensor
+            if isinstance(frames, torch.Tensor):
+                frames = frames.detach().cpu().numpy()
+
+            if isinstance(frames, np.ndarray):
+                # If already stacked: could be (T,H,W,C) or (H,W,C)
+                if frames.ndim == 3:
+                    frames_list = [frames]
+                else:
+                    frames_list = list(frames)
+            else:
+                # list/tuple of frames
+                frames_list = list(frames)
+
+            # Convert each frame -> HWC uint8 then stack -> (T,H,W,3)
+            frames_np = np.stack([self._to_hwc_uint8(f) for f in frames_list], axis=0)
+
+            # Resize/pad expects an array with .shape
+            new_images[k] = image_tools.resize_with_pad(frames_np, self.height, self.width)
+
+        data["image"] = new_images
         return data
 
 

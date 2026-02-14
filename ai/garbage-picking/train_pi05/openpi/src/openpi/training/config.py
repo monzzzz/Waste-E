@@ -991,11 +991,14 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(
             pi05=True,
             action_dim=6,
-            action_horizon=15,
+            action_horizon=10,
+            discrete_state_input=False,
         ),
         data=GarbagePickerDataConfig(
-            repo_id="Monzzz/garbage-picker-v1-2",
+            # Combine all garbage-picker datasets v1-4 through v1-10
+            repo_id="Monzzz/garbage-picker-v1-combined",
             default_prompt="Grab the object in front of you and place it in the bin behind you",
+
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=5_000,
