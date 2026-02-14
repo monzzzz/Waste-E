@@ -112,6 +112,23 @@ class Observation(Generic[ArrayT]):
         # Ensure that tokenized_prompt and tokenized_prompt_mask are provided together.
         if ("tokenized_prompt" in data) != ("tokenized_prompt_mask" in data):
             raise ValueError("tokenized_prompt and tokenized_prompt_mask must be provided together.")
+    
+        if "image_masks" in data and data["image_masks"] is not None:
+            fixed = {}
+            for k, v in data["image_masks"].items():
+                # convert to numpy bool
+                if isinstance(v, torch.Tensor):
+                    v = v.detach().cpu().numpy()
+                else:
+                    v = np.asarray(v)
+                v = v.astype(bool)
+
+                # ensure shape matches images batch dims
+                # images are (B, 1, H, W, C) so masks must be (B, 1)
+                if v.ndim == 1:
+                    v = v[:, None]
+                fixed[k] = v
+            data["image_masks"] = fixed
         # If images are uint8, convert them to [-1, 1] float32.
         for key in data["image"]:
             if data["image"][key].dtype == np.uint8:
