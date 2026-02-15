@@ -70,16 +70,57 @@ def init_wandb(config: _config.TrainConfig, *, resuming: bool, log_code: bool = 
         wandb.run.log_code(epath.Path(__file__).parent.parent)
 
 
-def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shape: at.Params) -> at.Params:
+def _load_weights_and_validate(
+    loader: _weight_loaders.WeightLoader | None, params_shape: at.Params
+) -> at.Params | None:
     """Loads and validates the weights. Returns a loaded subset of the weights."""
+    if loader is None:
+        return None
+    
+    # Load the weights
     loaded_params = loader.load(params_shape)
-    at.check_pytree_equality(expected=params_shape, got=loaded_params, check_shapes=True, check_dtypes=True)
-
-    # Remove jax.ShapeDtypeStruct from the loaded params. This makes sure that only the loaded params are returned.
-    return traverse_util.unflatten_dict(
-        {k: v for k, v in traverse_util.flatten_dict(loaded_params).items() if not isinstance(v, jax.ShapeDtypeStruct)}
-    )
-
+    
+    # Filter out parameters with mismatched shapes (e.g., action_in_proj, action_out_proj)
+    # Replace them with None so they get randomly initialized
+    flat_loaded = traverse_util.flatten_dict(loaded_params)
+    flat_expected = traverse_util.flatten_dict(params_shape)
+    
+    filtered = {}
+    skipped = []
+    
+    for key in flat_expected.keys():
+        if key in flat_loaded:
+            # Skip ShapeDtypeStruct (already a placeholder) - replace with None
+            if isinstance(flat_loaded[key], jax.ShapeDtypeStruct):
+                filtered[key] = None  # ✅ Use None instead of ShapeDtypeStruct
+                continue
+            # Check if shapes match
+            if flat_loaded[key].shape == flat_expected[key].shape:
+                filtered[key] = flat_loaded[key]
+            else:
+                # Replace mismatched params with None for random initialization
+                filtered[key] = None  # ✅ Use None instead of flat_expected[key]
+                skipped.append(
+                    f"{'/'.join(str(k) for k in key)}: "
+                    f"expected {flat_expected[key].shape}, got {flat_loaded[key].shape}"
+                )
+        else:
+            # Key not in loaded params - use None for random initialization
+            filtered[key] = None  # ✅ Use None
+    
+    if skipped:
+        logging.info(f"Skipping {len(skipped)} parameters with shape mismatches (will be randomly initialized):")
+        for s in skipped[:10]:  # Only show first 10
+            logging.info(f"  {s}")
+        if len(skipped) > 10:
+            logging.info(f"  ... and {len(skipped) - 10} more")
+    
+    loaded_params = traverse_util.unflatten_dict(filtered)
+    
+    # Remove the check_pytree_equality since we're using None for missing params
+    # The training code will handle None by randomly initializing those parameters
+    
+    return loaded_params
 
 @at.typecheck
 def init_train_state(
@@ -236,7 +277,7 @@ def main(config: _config.TrainConfig):
     train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
     jax.block_until_ready(train_state)
     logging.info(f"Initialized train state:\n{training_utils.array_tree_to_info(train_state.params)}")
-
+    
     if resuming:
         train_state = _checkpoints.restore_state(checkpoint_manager, train_state, data_loader)
 

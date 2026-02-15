@@ -1,76 +1,68 @@
-import dataclasses
-from typing import ClassVar
 
+# Based on https://github.com/Physical-Intelligence/openpi/src/openpi/policies/libero_policy.py
+
+import dataclasses
+
+import einops
 import numpy as np
 
 from openpi import transforms
+from openpi.models import model as _model
 
 
-def make_garbage_picker_example() -> dict:
-    """Creates a random input example for the garbage picker policy."""
-    return {
-        "state": np.ones((6,)),  # 5 joints + 1 gripper
-        "images": {
-            "front": np.random.randint(256, size=(3, 224, 224), dtype=np.uint8),
-            "top": np.random.randint(256, size=(3, 224, 224), dtype=np.uint8),
-            "wrist": np.random.randint(256, size=(3, 224, 224), dtype=np.uint8),
-        },
-        "prompt": "pick up the garbage",
-    }
+def _parse_image(image) -> np.ndarray:
+    image = np.asarray(image)
+    if np.issubdtype(image.dtype, np.floating):
+        image = (255 * image).astype(np.uint8)
+    if image.shape[0] == 3:
+        image = einops.rearrange(image, "c h w -> h w c")
+    return image
 
 
 @dataclasses.dataclass(frozen=True)
 class GarbagePickerInputs(transforms.DataTransformFn):
-    """Inputs for the garbage picker policy (SO-100 follower arm).
-
-    Expected inputs:
-    - images: dict[name, img] where img is [channel, height, width]. name must be in EXPECTED_CAMERAS.
-    - state: [6] (5 joints + 1 gripper)
-    - actions: [action_horizon, 6]
+    """
+    This class is used to convert inputs to the model to the expected format. It is used for both training and inference.
     """
 
-    # The expected camera names. All input cameras must be in this set. Missing cameras will be
-    # replaced with black images and the corresponding `image_mask` will be set to False.
-    EXPECTED_CAMERAS: ClassVar[tuple[str, ...]] = ("front", "top", "wrist")
+    # Do not change this for your own dataset.
+    action_dim: int
+
+    # Determines which model will be used.
+    # Do not change this for your own dataset.
+    model_type: _model.ModelType = _model.ModelType.PI0
 
     def __call__(self, data: dict) -> dict:
-        in_images = data["images"]
-        if set(in_images) - set(self.EXPECTED_CAMERAS):
-            raise ValueError(f"Expected images to contain {self.EXPECTED_CAMERAS}, got {tuple(in_images)}")
-
-        # Assume that front camera always exists as base
-        base_image = in_images["front"]
-
-        images = {
-            "base_0_rgb": base_image,
-        }
-        image_masks = {
-            "base_0_rgb": np.True_,
-        }
-
-        # Add the extra images
-        extra_image_names = {
-            "top_0_rgb": "top",
-            "wrist_0_rgb": "wrist",
-        }
-        for dest, source in extra_image_names.items():
-            if source in in_images:
-                images[dest] = in_images[source]
-                image_masks[dest] = np.True_
-            else:
-                images[dest] = np.zeros_like(base_image)
-                image_masks[dest] = np.False_
-
+        state = transforms.pad_to_dim(data["state"], self.action_dim)
+        state = np.expand_dims(state, axis=0)
+        ## I have 3 cameras and it is not perfectly fit the type of cameras Pi0 uses 
+        ## So I pass the front image instead of the right wrist image - it still works
+        base_image = _parse_image(data["images"]["top"])
+        wrist_image = _parse_image(data["images"]["wrist"])
+        front_image = _parse_image(data["images"]["front"])
+        # Create inputs dict. Do not change the keys in the dict below.
         inputs = {
-            "image": images,
-            "image_mask": image_masks,
-            "state": data["state"],
+            "state": state,
+            "image": {
+                "base_0_rgb": base_image,
+                "left_wrist_0_rgb": wrist_image,
+                "right_wrist_0_rgb": front_image,
+            },
+            "image_mask": {
+                "base_0_rgb": np.array([True]),
+                "left_wrist_0_rgb": np.array([True]),
+                "right_wrist_0_rgb": np.array([True]),
+            },
         }
 
-        # Actions are only available during training
+        # Pad actions to the model action dimension. Keep this for your own dataset.
+        # Actions are only available during training.
         if "actions" in data:
-            inputs["actions"] = np.asarray(data["actions"])
+            # We are padding to the model action dim.
+            actions = transforms.pad_to_dim(data["actions"], self.action_dim)
+            inputs["actions"] = actions
 
+        # Pass the prompt (aka language instruction) to the model.
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]
 
@@ -79,9 +71,11 @@ class GarbagePickerInputs(transforms.DataTransformFn):
 
 @dataclasses.dataclass(frozen=True)
 class GarbagePickerOutputs(transforms.DataTransformFn):
-    """Outputs for the garbage picker policy."""
+    """
+    This class is used to convert outputs from the model back the the dataset specific format. It is
+    used for inference only.
+    """
 
     def __call__(self, data: dict) -> dict:
-        # Return all 6 dimensions (5 joints + 1 gripper)
-        actions = np.asarray(data["actions"][:, :6])
-        return {"actions": actions}
+        # Only return the first 6 actions -- since we padded actions above to fit the model action
+        return {"actions": np.asarray(data["actions"][:, :6])}

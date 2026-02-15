@@ -78,7 +78,7 @@ IMAGE_RESOLUTION = (224, 224)
 #   s = state dimension
 #   l = sequence length
 #
-# @at.typecheck
+@at.typecheck
 @struct.dataclass
 class Observation(Generic[ArrayT]):
     """Holds observations, i.e., inputs to the model.
@@ -112,37 +112,64 @@ class Observation(Generic[ArrayT]):
         # Ensure that tokenized_prompt and tokenized_prompt_mask are provided together.
         if ("tokenized_prompt" in data) != ("tokenized_prompt_mask" in data):
             raise ValueError("tokenized_prompt and tokenized_prompt_mask must be provided together.")
-    
-        if "image_masks" in data and data["image_masks"] is not None:
-            fixed = {}
-            for k, v in data["image_masks"].items():
-                # convert to numpy bool
-                if isinstance(v, torch.Tensor):
-                    v = v.detach().cpu().numpy()
-                else:
-                    v = np.asarray(v)
-                v = v.astype(bool)
-
-                # ensure shape matches images batch dims
-                # images are (B, 1, H, W, C) so masks must be (B, 1)
-                if v.ndim == 1:
-                    v = v[:, None]
-                fixed[k] = v
-            data["image_masks"] = fixed
         # If images are uint8, convert them to [-1, 1] float32.
         for key in data["image"]:
             if data["image"][key].dtype == np.uint8:
                 data["image"][key] = data["image"][key].astype(np.float32) / 255.0 * 2.0 - 1.0
             elif hasattr(data["image"][key], "dtype") and data["image"][key].dtype == torch.uint8:
                 data["image"][key] = data["image"][key].to(torch.float32).permute(0, 3, 1, 2) / 255.0 * 2.0 - 1.0
+        
+        def _as_int_array(x):
+            # accept torch / numpy / jax, return a plain numpy int32 (safe for typecheck)
+            if x is None:
+                return None
+            if isinstance(x, torch.Tensor):
+                return x.detach().cpu().numpy().astype(np.int32)
+            # jax ArrayImpl -> np
+            try:
+                import jax
+                if isinstance(x, jax.Array):
+                    return np.asarray(x).astype(np.int32)
+            except Exception:
+                pass
+            return np.asarray(x).astype(np.int32)
+
+        def _as_bool_array(x):
+            if x is None:
+                return None
+            if isinstance(x, torch.Tensor):
+                return x.detach().cpu().numpy().astype(bool)
+            try:
+                import jax
+                if isinstance(x, jax.Array):
+                    return np.asarray(x).astype(bool)
+            except Exception:
+                pass
+            return np.asarray(x).astype(bool)
+        
+        # Get tokenized prompt and ensure it matches batch shape
+        tokenized_prompt = _as_int_array(data.get("tokenized_prompt"))
+        if tokenized_prompt is not None:
+            # If prompt is (B, L) but state is (B, 1, ...), expand to (B, 1, L)
+            state = np.asarray(data["state"])
+            if tokenized_prompt.ndim == 2 and state.ndim == 3:
+                tokenized_prompt = np.expand_dims(tokenized_prompt, axis=1)
+        
+        tokenized_prompt_mask = _as_bool_array(data.get("tokenized_prompt_mask"))
+        if tokenized_prompt_mask is not None:
+            # Match the expansion done to tokenized_prompt
+            state = np.asarray(data["state"])
+            if tokenized_prompt_mask.ndim == 2 and state.ndim == 3:
+                tokenized_prompt_mask = np.expand_dims(tokenized_prompt_mask, axis=1)
+        
         return cls(
             images=data["image"],
             image_masks=data["image_mask"],
             state=data["state"],
-            tokenized_prompt=data.get("tokenized_prompt"),
-            tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
-            token_ar_mask=data.get("token_ar_mask"),
-            token_loss_mask=data.get("token_loss_mask"),
+            tokenized_prompt=tokenized_prompt,
+            tokenized_prompt_mask=tokenized_prompt_mask,
+            token_ar_mask=_as_int_array(data.get("token_ar_mask")),
+            token_loss_mask=_as_bool_array(data.get("token_loss_mask")),
         )
 
     def to_dict(self) -> at.PyTree[ArrayT]:
@@ -178,8 +205,8 @@ def preprocess_observation(
     out_images = {}
     for key in image_keys:
         image = observation.images[key]
-        if image.shape[1:3] != image_resolution:
-            logger.info(f"Resizing image {key} from {image.shape[1:3]} to {image_resolution}")
+        if image.shape[-3:-1] != image_resolution:
+            logger.info(f"Resizing image {key} from {image.shape[-3:-1]} to {image_resolution}")
             image = image_tools.resize_with_pad(image, *image_resolution)
 
         if train:
@@ -188,7 +215,7 @@ def preprocess_observation(
 
             transforms = []
             if "wrist" not in key:
-                height, width = image.shape[1:3]
+                height, width = image.shape[-3:-1]
                 transforms += [
                     augmax.RandomCrop(int(width * 0.95), int(height * 0.95)),
                     augmax.Resize(width, height),
@@ -197,8 +224,16 @@ def preprocess_observation(
             transforms += [
                 augmax.ColorJitter(brightness=0.3, contrast=0.4, saturation=0.5),
             ]
-            sub_rngs = jax.random.split(rng, image.shape[0])
+            # Flatten batch dimensions for augmentation (augmax expects 3D images)
+            original_shape = image.shape
+            num_batch_elements = np.prod(batch_shape)
+            image = image.reshape((num_batch_elements,) + image.shape[-3:])
+            
+            sub_rngs = jax.random.split(rng, num_batch_elements)
             image = jax.vmap(augmax.Chain(*transforms))(sub_rngs, image)
+            
+            # Reshape back to original batch shape
+            image = image.reshape(original_shape)
 
             # Back to [-1, 1].
             image = image * 2.0 - 1.0

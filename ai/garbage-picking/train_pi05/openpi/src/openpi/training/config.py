@@ -424,16 +424,21 @@ class RLDSDroidDataConfig(DataConfigFactory):
         )
 
 
+# ...existing code...
+
 @dataclasses.dataclass(frozen=True)
 class GarbagePickerDataConfig(DataConfigFactory):
-    """Config for garbage-picker-v1-2 dataset with SO-100 follower arm."""
+    """
+    This config is used to configure transforms that are applied at various parts of the data pipeline.
+    """
 
-    # If provided, will be injected into the input data if the "prompt" key is not present.
-    default_prompt: str | None = "pick up the garbage"
+    action_sequence_keys: Sequence[str] = ("action",)
+    default_prompt: str = "Grab the object in front of you and place it in the bin behind you"
 
-    # Repack transforms to map your dataset keys to expected format
-    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
-        default=_transforms.Group(
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # Remove prompt from repack transform - your dataset doesn't have it
+        repack_transform = _transforms.Group(
             inputs=[
                 _transforms.RepackTransform(
                     {
@@ -443,38 +448,34 @@ class GarbagePickerDataConfig(DataConfigFactory):
                             "wrist": "observation.images.wrist",
                         },
                         "state": "observation.state",
-                        "actions": "action",
+                        "action": "action",
                     }
                 )
             ]
         )
-    )
 
-    @override
-    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        # Data transforms using the custom garbage picker policy transforms
-        # The delta mask converts first 5 dimensions (joints) to deltas, keeps gripper absolute
-        delta_action_mask = _transforms.make_bool_mask(5, -1)
         data_transforms = _transforms.Group(
-            inputs=[
-                garbage_picker_policy.GarbagePickerInputs(),
-                _transforms.DeltaActions(delta_action_mask),
-            ],
-            outputs=[
-                _transforms.AbsoluteActions(delta_action_mask),
-                garbage_picker_policy.GarbagePickerOutputs(),
-            ],
+            inputs=[garbage_picker_policy.GarbagePickerInputs(action_dim=model_config.action_dim, model_type=model_config.model_type)],
+            outputs=[garbage_picker_policy.GarbagePickerOutputs()],
         )
 
+        # First 5 joints are delta, last one (gripper) is absolute
+        delta_action_mask = _transforms.make_bool_mask(5, -1)
+        data_transforms = data_transforms.push(
+            inputs=[_transforms.DeltaActions(delta_action_mask)],
+            outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+        )
+
+        # Inject the default prompt
         model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
 
         return dataclasses.replace(
             self.create_base_config(assets_dirs, model_config),
-            repack_transforms=self.repack_transforms,
+            repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
         )
-
 
 @dataclasses.dataclass(frozen=True)
 class LeRobotDROIDDataConfig(DataConfigFactory):
@@ -996,9 +997,7 @@ _CONFIGS = [
         ),
         data=GarbagePickerDataConfig(
             # Combine all garbage-picker datasets v1-4 through v1-10
-            repo_id="Monzzz/garbage-picker-v1-combined",
-            default_prompt="Grab the object in front of you and place it in the bin behind you",
-
+            repo_id="Monzzz/garbage-picker-v1-9",
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=5_000,
