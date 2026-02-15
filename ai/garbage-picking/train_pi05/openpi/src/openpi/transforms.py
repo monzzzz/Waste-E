@@ -302,10 +302,10 @@ class DeltaActions(DataTransformFn):
     mask: Sequence[bool] | None
 
     def __call__(self, data: DataDict) -> DataDict:
-        if "actions" not in data or self.mask is None:
+        if "action" not in data or self.mask is None:
             return data
 
-        state, actions = data["state"], data["actions"]
+        state, actions = data["state"], data["action"]
         mask = np.asarray(self.mask)
         dims = mask.shape[-1]
         
@@ -323,7 +323,7 @@ class DeltaActions(DataTransformFn):
         
         actions = _copy_array(actions)  # Don't modify in-place
         actions[..., :dims] = actions[..., :dims] - masked_state
-        data["actions"] = actions
+        data["action"] = actions
 
         return data
 
@@ -338,10 +338,10 @@ class AbsoluteActions(DataTransformFn):
     mask: Sequence[bool] | None
 
     def __call__(self, data: DataDict) -> DataDict:
-        if "actions" not in data or self.mask is None:
+        if "action" not in data or self.mask is None:
             return data
 
-        state, actions = data["state"], data["actions"]
+        state, actions = data["state"], data["action"]
         mask = np.asarray(self.mask)
         dims = mask.shape[-1]
         
@@ -356,7 +356,7 @@ class AbsoluteActions(DataTransformFn):
         
         actions = _copy_array(actions)  # Don't modify in-place
         actions[..., :dims] = actions[..., :dims] + masked_state
-        data["actions"] = actions
+        data["action"] = actions
 
         return data
 

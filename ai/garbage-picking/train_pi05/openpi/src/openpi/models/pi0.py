@@ -130,7 +130,7 @@ class Pi0(_model.BaseModel):
             mask_expanded = jnp.tile(mask_expanded, (1,) * mask.ndim + (image_tokens.shape[-2],))  # (..., 1) -> (..., seq)
             input_mask.append(mask_expanded)
             # image tokens attend to each other
-            ar_mask += [False] * image_tokens.shape[1]
+            ar_mask += [False] * image_tokens.shape[-2]
 
         # add language (aka tokenized inputs)
         if obs.tokenized_prompt is not None:
@@ -147,7 +147,7 @@ class Pi0(_model.BaseModel):
             tokens.append(tokenized_inputs)
             input_mask.append(obs.tokenized_prompt_mask)
             # full attention between image and language inputs
-            ar_mask += [False] * tokenized_inputs.shape[1]
+            ar_mask += [False] * tokenized_inputs.shape[-2]
         
         # Concatenate along sequence dimension
         tokens = jnp.concatenate(tokens, axis=-2)
@@ -170,6 +170,12 @@ class Pi0(_model.BaseModel):
         at.Bool[at.Array, " s"],
         at.Float[at.Array, "b emb"] | None,
     ]:
+        # DEBUG: Check if noisy_actions is None
+        if noisy_actions is None:
+            print("[PI0.EMBED_SUFFIX] ERROR: noisy_actions is None!")
+        else:
+            print(f"[PI0.EMBED_SUFFIX] noisy_actions shape={noisy_actions.shape}, dtype={noisy_actions.dtype}")
+        
         input_mask = []
         ar_mask = []
         tokens = []
@@ -214,6 +220,12 @@ class Pi0(_model.BaseModel):
     def compute_loss(
         self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
     ) -> at.Float[at.Array, "*b ah"]:
+        # DEBUG: Check if actions is None
+        if actions is None:
+            print("[PI0.COMPUTE_LOSS] ERROR: actions is None!")
+        else:
+            print(f"[PI0.COMPUTE_LOSS] actions shape={actions.shape}, dtype={actions.dtype}")
+        
         preprocess_rng, noise_rng, time_rng = jax.random.split(rng, 3)
         observation = _model.preprocess_observation(preprocess_rng, observation, train=train)
 

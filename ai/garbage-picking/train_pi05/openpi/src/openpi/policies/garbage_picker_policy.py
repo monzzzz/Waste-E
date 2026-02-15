@@ -57,10 +57,10 @@ class GarbagePickerInputs(transforms.DataTransformFn):
 
         # Pad actions to the model action dimension. Keep this for your own dataset.
         # Actions are only available during training.
-        if "actions" in data:
+        if "action" in data:
             # We are padding to the model action dim.
-            actions = transforms.pad_to_dim(data["actions"], self.action_dim)
-            inputs["actions"] = actions
+            actions = transforms.pad_to_dim(data["action"], self.action_dim)
+            inputs["action"] = actions
 
         # Pass the prompt (aka language instruction) to the model.
         if "prompt" in data:

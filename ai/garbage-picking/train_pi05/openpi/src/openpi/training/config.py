@@ -432,7 +432,7 @@ class GarbagePickerDataConfig(DataConfigFactory):
     This config is used to configure transforms that are applied at various parts of the data pipeline.
     """
 
-    action_sequence_keys: Sequence[str] = ("action",)
+    action_sequence_keys: Sequence[str] = ("actions",)
     default_prompt: str = "Grab the object in front of you and place it in the bin behind you"
 
     @override
@@ -448,7 +448,7 @@ class GarbagePickerDataConfig(DataConfigFactory):
                             "wrist": "observation.images.wrist",
                         },
                         "state": "observation.state",
-                        "action": "action",
+                        "actions": "action",
                     }
                 )
             ]

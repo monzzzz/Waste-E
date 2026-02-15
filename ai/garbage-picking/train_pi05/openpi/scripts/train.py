@@ -136,8 +136,13 @@ def init_train_state(
         # Merge the partial params into the model.
         if partial_params is not None:
             graphdef, state = nnx.split(model)
+            # Filter out None values (these represent params that should be randomly initialized)
+            from flax.traverse_util import flatten_dict, unflatten_dict
+            flat_partial = flatten_dict(partial_params, sep='/')
+            filtered_partial = {k: v for k, v in flat_partial.items() if v is not None}
+            partial_params_filtered = unflatten_dict(filtered_partial, sep='/')
             # This will produce an error if the partial params are not a subset of the state.
-            state.replace_by_pure_dict(partial_params)
+            state.replace_by_pure_dict(partial_params_filtered)
             model = nnx.merge(graphdef, state)
 
         params = nnx.state(model)
@@ -277,7 +282,7 @@ def main(config: _config.TrainConfig):
     train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
     jax.block_until_ready(train_state)
     logging.info(f"Initialized train state:\n{training_utils.array_tree_to_info(train_state.params)}")
-    
+
     if resuming:
         train_state = _checkpoints.restore_state(checkpoint_manager, train_state, data_loader)
 
