@@ -111,28 +111,53 @@ class Pi0(_model.BaseModel):
         tokens = []
         # embed images
         for name in obs.images:
-            image_tokens, _ = self.PaliGemma.img(obs.images[name], train=False)
+            image = obs.images[name]
+            # Flatten batch dimensions: (..., H, W, C) -> (N, H, W, C) for SigLIP
+            original_shape = image.shape
+            batch_shape = original_shape[:-3]
+            # Use -1 to let JAX infer the flattened batch dimension
+            image_flat = image.reshape((-1,) + original_shape[-3:])
+            
+            image_tokens, _ = self.PaliGemma.img(image_flat, train=False)
+            
+            # Reshape back: (N, seq, emb) -> (..., seq, emb)
+            image_tokens = image_tokens.reshape(batch_shape + image_tokens.shape[1:])
 
             tokens.append(image_tokens)
-            input_mask.append(
-                einops.repeat(
-                    obs.image_masks[name],
-                    "b -> b s",
-                    s=image_tokens.shape[1],
-                )
-            )
+            # Expand mask to match image tokens: (...) -> (..., seq)
+            mask = obs.image_masks[name]
+            mask_expanded = jnp.expand_dims(mask, axis=-1)  # (...) -> (..., 1)
+            mask_expanded = jnp.tile(mask_expanded, (1,) * mask.ndim + (image_tokens.shape[-2],))  # (..., 1) -> (..., seq)
+            input_mask.append(mask_expanded)
             # image tokens attend to each other
             ar_mask += [False] * image_tokens.shape[1]
 
         # add language (aka tokenized inputs)
         if obs.tokenized_prompt is not None:
-            tokenized_inputs = self.PaliGemma.llm(obs.tokenized_prompt, method="embed")
+            # Flatten batch dimensions: (..., tokens) -> (N, tokens) for Gemma
+            original_shape = obs.tokenized_prompt.shape
+            batch_shape = original_shape[:-1]
+            prompt_flat = obs.tokenized_prompt.reshape((-1,) + original_shape[-1:])
+            
+            tokenized_inputs = self.PaliGemma.llm(prompt_flat, method="embed")
+            
+            # Reshape back: (N, tokens, emb) -> (..., tokens, emb)
+            tokenized_inputs = tokenized_inputs.reshape(batch_shape + tokenized_inputs.shape[1:])
+            
             tokens.append(tokenized_inputs)
             input_mask.append(obs.tokenized_prompt_mask)
             # full attention between image and language inputs
             ar_mask += [False] * tokenized_inputs.shape[1]
-        tokens = jnp.concatenate(tokens, axis=1)
-        input_mask = jnp.concatenate(input_mask, axis=1)
+        
+        # Concatenate along sequence dimension
+        tokens = jnp.concatenate(tokens, axis=-2)
+        input_mask = jnp.concatenate(input_mask, axis=-1)
+        
+        # Flatten batch dimensions to match expected output shape (b, s, emb)
+        batch_shape = tokens.shape[:-2]
+        tokens = tokens.reshape((-1,) + tokens.shape[-2:])
+        input_mask = input_mask.reshape((-1, input_mask.shape[-1]))
+        
         ar_mask = jnp.array(ar_mask)
         return tokens, input_mask, ar_mask
 

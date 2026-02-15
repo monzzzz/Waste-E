@@ -20,6 +20,14 @@ T = TypeVar("T")
 S = TypeVar("S")
 
 
+def _copy_array(arr):
+    """Copy an array, handling both numpy arrays and PyTorch tensors."""
+    if hasattr(arr, 'clone'):  # PyTorch tensor
+        return arr.clone()
+    else:  # numpy array
+        return arr.copy()
+
+
 @runtime_checkable
 class DataTransformFn(Protocol):
     def __call__(self, data: DataDict) -> DataDict:
@@ -300,7 +308,21 @@ class DeltaActions(DataTransformFn):
         state, actions = data["state"], data["actions"]
         mask = np.asarray(self.mask)
         dims = mask.shape[-1]
-        actions[..., :dims] -= np.expand_dims(np.where(mask, state[..., :dims], 0), axis=-2)
+        
+        # Ensure state has same number of dimensions as actions
+        # state: (s,) or (..., s)
+        # actions: (..., ah, ad)
+        # We need to broadcast state to (..., 1, s) to match actions' shape
+        state_slice = state[..., :dims]
+        masked_state = np.where(mask, state_slice, 0)
+        
+        # Add action_horizon dimension to state: (..., s) -> (..., 1, s)
+        if state.ndim < actions.ndim:
+            for _ in range(actions.ndim - state.ndim):
+                masked_state = np.expand_dims(masked_state, axis=-2)
+        
+        actions = _copy_array(actions)  # Don't modify in-place
+        actions[..., :dims] = actions[..., :dims] - masked_state
         data["actions"] = actions
 
         return data
@@ -322,7 +344,18 @@ class AbsoluteActions(DataTransformFn):
         state, actions = data["state"], data["actions"]
         mask = np.asarray(self.mask)
         dims = mask.shape[-1]
-        actions[..., :dims] += np.expand_dims(np.where(mask, state[..., :dims], 0), axis=-2)
+        
+        # Ensure state has same number of dimensions as actions
+        state_slice = state[..., :dims]
+        masked_state = np.where(mask, state_slice, 0)
+        
+        # Add action_horizon dimension to state: (..., s) -> (..., 1, s)
+        if state.ndim < actions.ndim:
+            for _ in range(actions.ndim - state.ndim):
+                masked_state = np.expand_dims(masked_state, axis=-2)
+        
+        actions = _copy_array(actions)  # Don't modify in-place
+        actions[..., :dims] = actions[..., :dims] + masked_state
         data["actions"] = actions
 
         return data
