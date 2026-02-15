@@ -537,4 +537,27 @@ class DataLoaderImpl(DataLoader):
 
     def __iter__(self):
         for batch in self._data_loader:
+            # Use the action key specified in the config
+            
+            # Convert all arrays to numpy to ensure jaxtyping recognizes them properly
+            if "image_masks" in batch and isinstance(batch["image_masks"], dict):
+                batch["image_masks"] = {
+                    k: np.asarray(v, dtype=bool)
+                    for k, v in batch["image_masks"].items()
+                }
+
+            if "image" in batch and isinstance(batch["image"], dict):
+                batch["image"] = {
+                    k: np.asarray(v)
+                    for k, v in batch["image"].items()
+                }
+
+            if "state" in batch:
+                batch["state"] = np.asarray(batch["state"])
+
+            if "actions" in batch:
+                batch["actions"] = np.asarray(batch["actions"])
+            
+            # DEBUG: Check if actions exist and their shape
+            print("batch actions:", batch["actions"])
             yield _model.Observation.from_dict(batch), batch["actions"]
