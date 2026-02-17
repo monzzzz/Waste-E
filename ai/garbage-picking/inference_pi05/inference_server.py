@@ -57,12 +57,26 @@ def predict():
     }
     """
     try:
-        data = request.json
+        # Check if request has JSON data
+        if not request.is_json:
+            raise ValueError("Request must be JSON")
+        
+        data = request.get_json()
+        
+        if data is None:
+            raise ValueError("Failed to parse JSON from request body")
         
         # Debug: Print received data structure
-        print(f"Received request with keys: {list(data.keys())}")
-        print(f"State type: {type(data.get('state'))}, length: {len(data.get('state', []))}")
+        print("Received data:", data)
+        print(f"=== Received request ===")
+        print(f"Keys: {list(data.keys())}")
+        print(f"State present: {'state' in data}")
+        print(f"State value: {data.get('state', 'MISSING')}")
+        print(f"State type: {type(data.get('state'))}")
+        if 'state' in data:
+            print(f"State length: {len(data.get('state', []))}")
         print(f"Images keys: {list(data.get('images', {}).keys())}")
+        print(f"Prompt: {data.get('prompt', 'MISSING')[:50]}...")
         
         # Extract data with validation
         if 'state' not in data:
@@ -107,14 +121,21 @@ def predict():
         })
         
     except KeyError as e:
-        print(f"KeyError: {e}")
+        print(f"❌ KeyError: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 400
+    
+    except ValueError as e:
+        print(f"❌ ValueError: {e}")
         return jsonify({
             "success": False,
             "error": str(e)
         }), 400
         
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"❌ Exception: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({
