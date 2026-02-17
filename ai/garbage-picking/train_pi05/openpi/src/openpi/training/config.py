@@ -436,7 +436,7 @@ class GarbagePickerDataConfig(DataConfigFactory):
     This config is used to configure transforms that are applied at various parts of the data pipeline.
     """
 
-    action_sequence_keys: Sequence[str] = ("actions",)
+    action_sequence_keys: Sequence[str] = ("action",)
     default_prompt: str = "Grab the object in front of you and place it in the bin behind you"
     
     split: Literal["train", "val"] = "train"
