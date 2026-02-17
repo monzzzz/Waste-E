@@ -82,6 +82,10 @@ class DataConfig:
     model_transforms: _transforms.Group = dataclasses.field(default_factory=_transforms.Group)
     # If true, will use quantile normalization. Otherwise, normal z-score normalization will be used.
     use_quantile_norm: bool = False
+    
+    # Validation data settings
+    val_split_ratio: float | None = None
+    val_episode_indices: list[int] | None = None
 
     # Names of keys that will be used by the data loader to generate the action sequence. The length of the
     # sequence is defined by the `action_horizon` field in the model config. This should be adjusted if your
@@ -434,6 +438,9 @@ class GarbagePickerDataConfig(DataConfigFactory):
 
     action_sequence_keys: Sequence[str] = ("actions",)
     default_prompt: str = "Grab the object in front of you and place it in the bin behind you"
+    
+    split: Literal["train", "val"] = "train"
+    val_split_ratio: float = 0.2
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -475,6 +482,7 @@ class GarbagePickerDataConfig(DataConfigFactory):
             data_transforms=data_transforms,
             model_transforms=model_transforms,
             action_sequence_keys=self.action_sequence_keys,
+            val_split_ratio=self.val_split_ratio if self.split == "train" else None,
         )
 
 @dataclasses.dataclass(frozen=True)
@@ -548,6 +556,13 @@ class TrainConfig:
 
     # Determines the data to be trained on.
     data: DataConfigFactory = dataclasses.field(default_factory=FakeDataConfig)
+    
+    # Optional validation dataset. If provided, validation loss will be computed.
+    val_data: DataConfigFactory | None = None
+    # How often (in steps) to evaluate on validation set.
+    eval_interval: int = 1000
+    # Number of validation batches to evaluate per validation run.
+    num_val_batches: int = 10
 
     # Base directory for config assets (e.g., norm stats).
     assets_base_dir: str = "./assets"
@@ -997,10 +1012,18 @@ _CONFIGS = [
         ),
         data=GarbagePickerDataConfig(
             # Combine all garbage-picker datasets v1-4 through v1-10
-            repo_id="Monzzz/garbage-picker-v1-9",
+            repo_id="Monzzz/garbage-picker-v1-combined-2",
+            split="train",
+        ),
+        val_data=GarbagePickerDataConfig(
+            repo_id="Monzzz/garbage-picker-v1-combined-2",
+            split="val",
+            val_split_ratio=0.2,
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        eval_interval=250,
         num_train_steps=5_000,
+        num_val_batches=20
     ),
 
     TrainConfig(
