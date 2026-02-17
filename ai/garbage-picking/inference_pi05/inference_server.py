@@ -97,23 +97,6 @@ def predict():
             "state": np.array(data["state"], dtype=np.float32),  # Just "state", not "observation.state"
         }
         
-<<<<<<< HEAD
-        # Decode images - map client camera names to model expected names
-        # Client sends: front, top, wrist
-        # Model expects: base_0_rgb, left_wrist_0_rgb, right_wrist_0_rgb
-        camera_mapping = {
-            "front": "base_0_rgb",
-            "top": "left_wrist_0_rgb", 
-            "wrist": "right_wrist_0_rgb"
-        }
-        
-        for client_cam, model_cam in camera_mapping.items():
-            if client_cam in data["images"]:
-                pi_input[f"observation/images/{model_cam}"] = decode_image(data["images"][client_cam])
-                print(f"Decoded {client_cam} -> {model_cam}")
-        
-        print(f"Running inference with state shape: {pi_input['observation/state'].shape}")
-=======
         # Decode images - Match the REPACKED format
         pi_input["images"] = {}
         for cam_name, base64_img in data["images"].items():
@@ -124,17 +107,12 @@ def predict():
         print(f"Final pi_input keys: {list(pi_input.keys())}")
         print(f"Images keys: {list(pi_input['images'].keys())}")
         print(f"State shape: {pi_input['state'].shape}")
->>>>>>> 15df719 (inference worked)
         
         # Run inference
         output = policy.infer(pi_input)
         actions = output["actions"].tolist()
         
-<<<<<<< HEAD
-        print(f"Generated {len(actions)} actions")
-=======
         print(f"✅ Predicted {len(actions)} actions")
->>>>>>> 15df719 (inference worked)
         
         return jsonify({
             "success": True,
@@ -157,13 +135,8 @@ def predict():
         }), 400
         
     except Exception as e:
-<<<<<<< HEAD
-        print(f"❌ Exception: {e}")
-        import traceback
-=======
         import traceback
         print(f"❌ {type(e).__name__}: {e}")
->>>>>>> 15df719 (inference worked)
         traceback.print_exc()
         return jsonify({
             "success": False,
