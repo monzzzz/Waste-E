@@ -6,6 +6,8 @@ from shapely.ops import nearest_points
 import numpy as np
 from matplotlib.patches import Rectangle
 from matplotlib.widgets import RectangleSelector
+import contextily as ctx
+from tile_basemap import TileBasemap
 
 
 class PathPlanner:
@@ -19,6 +21,9 @@ class PathPlanner:
         print("Loading road network...")
         self.gdf = gpd.read_file(shapefile_path)
         print(f"Loaded {len(self.gdf)} road segments")
+        
+        # Load Google Maps tiles if available
+        self.tile_basemap = TileBasemap()
         
         # Create network graph
         self.graph = nx.Graph()
@@ -352,7 +357,7 @@ class PathPlanner:
             print(f"Coverage path created with {len(path)} waypoints")
             return path
     
-    def visualize_coverage_path(self, area_polygon, roads_in_area, coverage_path, save_path=None):
+    def visualize_coverage_path(self, area_polygon, roads_in_area, coverage_path, save_path=None, add_basemap=True, use_google_tiles=True):
         """
         Visualize the area coverage path.
         
@@ -361,8 +366,21 @@ class PathPlanner:
             roads_in_area: GeoDataFrame of roads in the area
             coverage_path: List of nodes in the coverage path
             save_path: Optional path to save the figure
+            add_basemap: Whether to add satellite/map background (default: True)
+            use_google_tiles: Use downloaded Google Maps tiles instead of contextily (default: True)
         """
         fig, ax = plt.subplots(figsize=(16, 16))
+        
+        # Add basemap first (so it's in the background)
+        if add_basemap:
+            if use_google_tiles and self.tile_basemap.tiles:
+                self.tile_basemap.add_to_plot(ax, alpha=0.7)
+            else:
+                try:
+                    ctx.add_basemap(ax, crs=self.gdf.crs.to_string(), source=ctx.providers.Esri.WorldImagery, alpha=0.5)
+                    print("Satellite basemap added successfully")
+                except Exception as e:
+                    print(f"Could not add basemap: {e}")
         
         # Plot full road network in background
         self.gdf.plot(ax=ax, color='lightgray', linewidth=0.5, alpha=0.3, label='Other Roads')
@@ -548,7 +566,7 @@ class PathPlanner:
             'maxy': bounds[3]
         }
     
-    def show_map_with_labels(self, points_to_label=None, labels=None, area_polygon=None, save_path=None):
+    def show_map_with_labels(self, points_to_label=None, labels=None, area_polygon=None, save_path=None, add_basemap=True, use_google_tiles=True):
         """
         Display the road network map with labeled points and optional area.
         
@@ -557,8 +575,21 @@ class PathPlanner:
             labels: List of labels for each point ['Start', 'Waypoint', 'End', ...]
             area_polygon: Optional polygon to highlight
             save_path: Optional path to save the figure
+            add_basemap: Whether to add satellite/map background (default: True)
+            use_google_tiles: Use downloaded Google Maps tiles instead of contextily (default: True)
         """
         fig, ax = plt.subplots(figsize=(15, 15))
+        
+        # Add satellite basemap if requested
+        if add_basemap:
+            if use_google_tiles and self.tile_basemap.tiles:
+                self.tile_basemap.add_to_plot(ax, alpha=0.7)
+            else:
+                try:
+                    ctx.add_basemap(ax, crs=self.gdf.crs.to_string(), source=ctx.providers.Esri.WorldImagery, alpha=0.5)
+                    print("Satellite basemap added successfully")
+                except Exception as e:
+                    print(f"Could not add basemap: {e}")
         
         # Plot road network
         self.gdf.plot(ax=ax, color='navy', linewidth=0.8, alpha=0.6)

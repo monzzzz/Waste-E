@@ -9,15 +9,15 @@ class BNO055_IMU:
     """
     BNO055 9-DOF Absolute Orientation IMU Module for Orange Pi
     
-    Physical I2C GPIO Connections:
+    Physical UART GPIO Connections:
     - VIN  -> Pin 1 or 2 (3.3V or 5V)
     - GND  -> Pin 6, 9, 14, 20, 25, 30, 34, or 39 (Ground)
-    - SDA  -> Pin 3 (GPIO 12, I2C0_SDA)
-    - SCL  -> Pin 5 (GPIO 11, I2C0_SCL)
+    - RX   -> Pin 16 (UART6_RX)
+    - TX   -> Pin 18 (UART6_TX)
     
-    Alternative I2C1:
-    - SDA  -> Pin 27 (GPIO 19, I2C1_SDA)
-    - SCL  -> Pin 28 (GPIO 18, I2C1_SCL)
+    Alternative UART ports:
+    - UART3: TX->Pin 8, RX->Pin 10
+    - UART5: TX->Pin 12, RX->Pin 11
     
     Features:
     - 9-axis absolute orientation (quaternion, euler angles)
@@ -27,48 +27,44 @@ class BNO055_IMU:
     - Temperature sensor
     - Built-in sensor fusion algorithm
     
-    I2C Address: 0x28 (default) or 0x29
+    Communication: UART (115200 baud default)
     """
     
-    def __init__(self, i2c_bus: int = 0, address: int = 0x28):
+    def __init__(self, uart_port: str = "/dev/ttyS6", baudrate: int = 115200):
         """
-        Initialize BNO055 IMU sensor
+        Initialize BNO055 IMU sensor via UART
         
         Args:
-            i2c_bus: I2C bus number (0 for I2C0, 1 for I2C1)
-            address: I2C address (0x28 or 0x29)
+            uart_port: UART device path (e.g., /dev/ttyS6 for UART6)
+            baudrate: Communication speed (default: 115200)
         """
-        self.i2c_bus = i2c_bus
-        self.address = address
+        self.uart_port = uart_port
+        self.baudrate = baudrate
         self.sensor = None
-        self.i2c = None
+        self.uart = None
         
     def connect(self) -> bool:
-        """Initialize I2C connection and sensor"""
+        """Initialize UART connection and sensor"""
         try:
-            # Initialize I2C
-            if self.i2c_bus == 0:
-                self.i2c = busio.I2C(board.SCL, board.SDA)
-            else:
-                # For I2C1, you may need to use specific pins
-                self.i2c = busio.I2C(board.SCL, board.SDA)
+            # Initialize UART
+            self.uart = busio.UART(board.TX, board.RX, baudrate=self.baudrate, timeout=1)
             
-            # Initialize BNO055 sensor
-            self.sensor = adafruit_bno055.BNO055_I2C(self.i2c, address=self.address)
+            # Initialize BNO055 sensor via UART
+            self.sensor = adafruit_bno055.BNO055_UART(self.uart)
             
             # Give sensor time to initialize
             time.sleep(0.5)
             
             return True
         except Exception as e:
-            print(f"Error connecting to BNO055: {e}")
+            print(f"Error connecting to BNO055 via UART: {e}")
             return False
     
     def disconnect(self):
-        """Close I2C connection"""
-        if self.i2c:
-            self.i2c.deinit()
-            self.i2c = None
+        """Close UART connection"""
+        if self.uart:
+            self.uart.deinit()
+            self.uart = None
             self.sensor = None
     
     def get_calibration_status(self) -> Optional[Dict[str, int]]:
@@ -318,21 +314,21 @@ def main():
     Example usage
     
     Hardware Setup:
-    1. Connect BNO055 to Orange Pi GPIO pins (I2C0):
+    1. Connect BNO055 to Orange Pi GPIO pins (UART):
        - BNO055 VIN -> Orange Pi Pin 2 (5V) or Pin 1 (3.3V)
        - BNO055 GND -> Orange Pi Pin 6 (GND)
-       - BNO055 SDA -> Orange Pi Pin 3 (I2C0_SDA/GPIO12)
-       - BNO055 SCL -> Orange Pi Pin 5 (I2C0_SCL/GPIO11)
+       - BNO055 RX  -> Orange Pi Pin 16 (UART6_RX)
+       - BNO055 TX  -> Orange Pi Pin 18 (UART6_TX)
     
-    2. Enable I2C on Orange Pi (if not already enabled):
-       sudo orangepi-config -> System -> Hardware -> i2c0
+    2. Enable UART on Orange Pi (if not already enabled):
+       sudo orangepi-config -> System -> Hardware -> uart6
     
-    3. Verify I2C device is detected:
-       sudo i2cdetect -y 0
-       (Should show device at address 0x28)
+    3. Verify UART device exists:
+       ls -l /dev/ttyS*
+       (Should show /dev/ttyS6 or similar)
     """
-    # Initialize IMU sensor on I2C0
-    imu = BNO055_IMU(i2c_bus=0, address=0x28)
+    # Initialize IMU sensor on UART6
+    imu = BNO055_IMU(uart_port="/dev/ttyS6", baudrate=115200)
     
     # Connect to sensor
     if imu.connect():
@@ -381,12 +377,13 @@ def main():
             imu.disconnect()
             print("IMU disconnected")
     else:
-        print("Failed to connect to BNO055")
+        print("Failed to connect to BNO055 via UART")
         print("\nTroubleshooting:")
-        print("1. Check I2C is enabled: sudo orangepi-config")
-        print("2. Check wiring connections")
-        print("3. Verify device: sudo i2cdetect -y 0")
-        print("4. Install required packages: pip install adafruit-circuitpython-bno055")
+        print("1. Check UART is enabled: sudo orangepi-config")
+        print("2. Check wiring connections (TX<->RX, RX<->TX)")
+        print("3. Verify device: ls -l /dev/ttyS*")
+        print("4. Check permissions: sudo chmod 666 /dev/ttyS6")
+        print("5. Install required packages: pip install adafruit-circuitpython-bno055")
 
 
 if __name__ == "__main__":
