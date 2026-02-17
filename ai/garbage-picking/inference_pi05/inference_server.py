@@ -86,12 +86,18 @@ def predict():
         if 'prompt' not in data:
             raise KeyError("Missing 'prompt' in request payload")
         
-        # Build model input
+        print("=== Received request ===")
+        print(f"Keys: {list(data.keys())}")
+        print(f"State: {data['state']}")
+        print(f"Images keys: {list(data['images'].keys())}")
+        
+        # Build model input - Match the REPACKED format (after transform)
         pi_input = {
             "prompt": data["prompt"],
-            "observation/state": np.array(data["state"], dtype=np.float32),
+            "state": np.array(data["state"], dtype=np.float32),  # Just "state", not "observation.state"
         }
         
+<<<<<<< HEAD
         # Decode images - map client camera names to model expected names
         # Client sends: front, top, wrist
         # Model expects: base_0_rgb, left_wrist_0_rgb, right_wrist_0_rgb
@@ -107,12 +113,28 @@ def predict():
                 print(f"Decoded {client_cam} -> {model_cam}")
         
         print(f"Running inference with state shape: {pi_input['observation/state'].shape}")
+=======
+        # Decode images - Match the REPACKED format
+        pi_input["images"] = {}
+        for cam_name, base64_img in data["images"].items():
+            decoded = decode_image(base64_img)
+            pi_input["images"][cam_name] = decoded  # Just images.{cam}
+            print(f"Decoded {cam_name}: shape {decoded.shape}")
+        
+        print(f"Final pi_input keys: {list(pi_input.keys())}")
+        print(f"Images keys: {list(pi_input['images'].keys())}")
+        print(f"State shape: {pi_input['state'].shape}")
+>>>>>>> 15df719 (inference worked)
         
         # Run inference
         output = policy.infer(pi_input)
         actions = output["actions"].tolist()
         
+<<<<<<< HEAD
         print(f"Generated {len(actions)} actions")
+=======
+        print(f"✅ Predicted {len(actions)} actions")
+>>>>>>> 15df719 (inference worked)
         
         return jsonify({
             "success": True,
@@ -135,12 +157,18 @@ def predict():
         }), 400
         
     except Exception as e:
+<<<<<<< HEAD
         print(f"❌ Exception: {e}")
         import traceback
+=======
+        import traceback
+        print(f"❌ {type(e).__name__}: {e}")
+>>>>>>> 15df719 (inference worked)
         traceback.print_exc()
         return jsonify({
             "success": False,
-            "error": str(e)
+            "error": str(e),
+            "traceback": traceback.format_exc()
         }), 500
 
 @app.route('/health', methods=['GET'])
