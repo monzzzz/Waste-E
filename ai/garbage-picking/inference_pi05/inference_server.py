@@ -50,14 +50,27 @@ def predict():
         "prompt": "task description",
         "state": [x, y, z, rx, ry, rz],
         "images": {
-            "base_0_rgb": "base64_encoded_image",
-            "left_wrist_0_rgb": "base64_encoded_image",
-            "right_wrist_0_rgb": "base64_encoded_image"
+            "front": "base64_encoded_image",
+            "top": "base64_encoded_image",
+            "wrist": "base64_encoded_image"
         }
     }
     """
     try:
         data = request.json
+        
+        # Debug: Print received data structure
+        print(f"Received request with keys: {list(data.keys())}")
+        print(f"State type: {type(data.get('state'))}, length: {len(data.get('state', []))}")
+        print(f"Images keys: {list(data.get('images', {}).keys())}")
+        
+        # Extract data with validation
+        if 'state' not in data:
+            raise KeyError("Missing 'state' in request payload")
+        if 'images' not in data:
+            raise KeyError("Missing 'images' in request payload")
+        if 'prompt' not in data:
+            raise KeyError("Missing 'prompt' in request payload")
         
         # Build model input
         pi_input = {
@@ -65,13 +78,27 @@ def predict():
             "observation/state": np.array(data["state"], dtype=np.float32),
         }
         
-        # Decode images
-        for cam_name, base64_img in data["images"].items():
-            pi_input[f"observation/images/{cam_name}"] = decode_image(base64_img)
+        # Decode images - map client camera names to model expected names
+        # Client sends: front, top, wrist
+        # Model expects: base_0_rgb, left_wrist_0_rgb, right_wrist_0_rgb
+        camera_mapping = {
+            "front": "base_0_rgb",
+            "top": "left_wrist_0_rgb", 
+            "wrist": "right_wrist_0_rgb"
+        }
+        
+        for client_cam, model_cam in camera_mapping.items():
+            if client_cam in data["images"]:
+                pi_input[f"observation/images/{model_cam}"] = decode_image(data["images"][client_cam])
+                print(f"Decoded {client_cam} -> {model_cam}")
+        
+        print(f"Running inference with state shape: {pi_input['observation/state'].shape}")
         
         # Run inference
         output = policy.infer(pi_input)
         actions = output["actions"].tolist()
+        
+        print(f"Generated {len(actions)} actions")
         
         return jsonify({
             "success": True,
@@ -79,7 +106,17 @@ def predict():
             "num_actions": len(actions)
         })
         
+    except KeyError as e:
+        print(f"KeyError: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 400
+        
     except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({
             "success": False,
             "error": str(e)
