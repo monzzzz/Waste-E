@@ -9,7 +9,7 @@ import base64
 import io
 from PIL import Image
 
-# run this ssh -L 8001:localhost:8001 vglalala@207.6.198.219 -p 2222
+# run this ssh -L 8001:localhost:8001 vglalala@207.6.198.210 -p 2222
 
 from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 from lerobot.cameras.opencv import OpenCVCameraConfig
@@ -29,7 +29,7 @@ ROBOT_ID = "my_awesome_follower_arm"  # Your follower arm ID (for calibration an
 
 # Camera settings (match your recording config)
 CAMERA_CONFIG = {
-    "front": OpenCVCameraConfig(index_or_path=4, width=1280, height=720, fps=10, warmup_s=5),
+    "front": OpenCVCameraConfig(index_or_path=0, width=1280, height=720, fps=10, warmup_s=5),
     "top": OpenCVCameraConfig(index_or_path=2, width=1280, height=720, fps=10, warmup_s=5),
     "wrist": OpenCVCameraConfig(index_or_path=6, width=1280, height=720, fps=10, warmup_s=5),
 }
@@ -103,9 +103,6 @@ def get_remote_prediction(obs, prompt):
         # Get actions from server
         actions = np.array(result["actions"])
         
-        # ✅ ADD ELBOW OFFSET: +90 degrees to the elbow joint (index 2)
-        actions[2] += np.deg2rad(90)
-        print(f"Debug - Elbow offset applied: +90° (radians: +{np.deg2rad(90):.4f})")
         
         return actions
         
@@ -184,8 +181,7 @@ def main():
             
             # Maintain FPS
             dt = time.perf_counter() - t0
-            if dt < 1.0 / FPS:
-                time.sleep(1.0 / FPS - dt)
+            time.sleep(max(0, 1.0 / FPS - dt))
     
     except KeyboardInterrupt:
         print("\n\nStopping...")
