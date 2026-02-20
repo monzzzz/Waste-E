@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
 Evaluate Pi0.5 policy running on remote RunPod server (via SSH port-forward)
-Delta-action version:
-- Uses a single explicit joint order for BOTH state extraction and action sending
-- Treats model outputs as DELTAS: target = current_state + delta
+Fixes:
+- Uses a single explicit joint order for BOTH state extraction and action sending (NO sorting)
 - Validates observation keys, image keys, and action shape
 - Keeps FPS stable
 """
@@ -39,7 +38,12 @@ CAMERA_CONFIG = {
     "wrist": OpenCVCameraConfig(index_or_path=6, width=1280, height=720, fps=10, warmup_s=5),
 }
 
+# -------------------
 # IMPORTANT: FIXED JOINT ORDER
+# Use the same order for:
+#   (1) state vector you send to the model
+#   (2) action vector you send to the robot
+# -------------------
 JOINT_ORDER = [
     "shoulder_pan.pos",
     "shoulder_lift.pos",
@@ -50,9 +54,6 @@ JOINT_ORDER = [
 ]
 
 CAM_ORDER = ["front", "top", "wrist"]
-
-# DELTA SCALE (useful if deltas are too big/small)
-DELTA_SCALE = 1.0
 
 
 def encode_image(image_array: np.ndarray) -> str:
@@ -85,6 +86,7 @@ def build_images(obs: dict) -> dict[str, str]:
             missing.append(cam)
 
     if missing:
+        # Not always fatal, but usually you want all cams
         print(f"⚠️ Warning: Missing camera(s) in observation: {missing}. Available: {list(obs.keys())}")
 
     if not images_b64:
@@ -98,7 +100,11 @@ def get_remote_prediction(obs: dict, prompt: str) -> np.ndarray:
     state = build_state(obs)
     images_b64 = build_images(obs)
 
-    payload = {"prompt": prompt, "state": state, "images": images_b64}
+    payload = {
+        "prompt": prompt,
+        "state": state,
+        "images": images_b64,
+    }
 
     debug_payload = {
         "prompt": prompt,
@@ -166,9 +172,9 @@ def main():
     if not robot.is_connected:
         raise RuntimeError("Robot is not connected!")
 
+    # Optional: print robot action keys so you can compare
     print("Robot action_features order:", list(robot.action_features.keys()))
     print("Using JOINT_ORDER:", JOINT_ORDER)
-    print(f"DELTA mode ON | DELTA_SCALE={DELTA_SCALE}")
 
     print("\n✅ Robot connected! Starting control loop...")
     print(f"   Cameras: {list(CAMERA_CONFIG.keys())}")
@@ -203,21 +209,17 @@ def main():
                     f"Step {step}: received {len(last_actions)} actions | "
                     f"pred {t_pred:.3f}s (avg {np.mean(pred_times):.3f}s)"
                 )
-                print("Debug - DELTA ACTION[0]:", last_actions[0, :len(JOINT_ORDER)].tolist())
+                # Debug a sample
+                print("Debug - ACTION[0]:", last_actions[0, :len(JOINT_ORDER)].tolist())
 
-            # --- Execute one DELTA action ---
-            # 1) Read current joint state *right now*
-            obs_now = robot.get_observation()
-            current_state = build_state(obs_now)  # list[float] in JOINT_ORDER
+            # Execute one action
+            action = last_actions[action_index]
 
-            # 2) Delta from model
-            delta = last_actions[action_index, :len(JOINT_ORDER)].astype(np.float32) * float(DELTA_SCALE)
+            # IMPORTANT: Map by JOINT_ORDER (same order as state)
+            action_dict = {
+                JOINT_ORDER[i]: float(action[i]) for i in range(len(JOINT_ORDER))
+            }
 
-            # 3) Target = current + delta
-            target = (np.array(current_state, dtype=np.float32) + delta).tolist()
-
-            # 4) Send target
-            action_dict = {JOINT_ORDER[i]: float(target[i]) for i in range(len(JOINT_ORDER))}
             robot.send_action(action_dict)
 
             action_index += 1
