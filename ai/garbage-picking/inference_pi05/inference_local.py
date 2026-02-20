@@ -9,6 +9,8 @@ import base64
 import io
 from PIL import Image
 
+# run this ssh -L 8001:localhost:8001 vglalala@207.6.198.219 -p 2222
+
 from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 from lerobot.cameras.opencv import OpenCVCameraConfig
 
@@ -19,11 +21,11 @@ FPS = 10  # Match your recording FPS
 TASK_DESCRIPTION = "Pick an object in front of you and place in the bin behind you."
 ACTIONS_TO_EXECUTE = 20
 
-RUNPOD_SERVER_URL = "https://83sgrfcwsn5w33-8000.proxy.runpod.net"  # Get from RunPod exposed port
+INFERENCE_SERVER_URL = "http://localhost:8001"  # Get from RunPod exposed port
 
 # Robot hardware settings (match your recording config)
 ROBOT_PORT = "/dev/ttyACM0"  # Your follower arm port
-ROBOT_ID = "so101_follower_v1"
+ROBOT_ID = "my_awesome_follower_arm"  # Your follower arm ID (for calibration and connection)
 
 # Camera settings (match your recording config)
 CAMERA_CONFIG = {
@@ -82,7 +84,7 @@ def get_remote_prediction(obs, prompt):
     # Call server
     try:
         response = requests.post(
-            f"{RUNPOD_SERVER_URL}/predict",
+            f"{INFERENCE_SERVER_URL}/predict",
             json=payload,
             timeout=30,
             headers={'Content-Type': 'application/json'}
@@ -98,7 +100,14 @@ def get_remote_prediction(obs, prompt):
         if not result.get("success", False):
             raise RuntimeError(f"Prediction failed: {result.get('error', 'Unknown error')}")
         
-        return np.array(result["actions"])
+        # Get actions from server
+        actions = np.array(result["actions"])
+        
+        # ✅ ADD ELBOW OFFSET: +90 degrees to the elbow joint (index 2)
+        actions[2] += np.deg2rad(90)
+        print(f"Debug - Elbow offset applied: +90° (radians: +{np.deg2rad(90):.4f})")
+        
+        return actions
         
     except requests.exceptions.RequestException as e:
         raise RuntimeError(f"Request failed: {e}")
@@ -106,8 +115,8 @@ def get_remote_prediction(obs, prompt):
 def main():
     # Check server health
     try:
-        print(f"Connecting to RunPod server at {RUNPOD_SERVER_URL}...")
-        health = requests.get(f"{RUNPOD_SERVER_URL}/health", timeout=5).json()
+        print(f"Connecting to RunPod server at {INFERENCE_SERVER_URL}...")
+        health = requests.get(f"{INFERENCE_SERVER_URL}/health", timeout=5).json()
         print(f"✅ Server status: {health}")
     except Exception as e:
         print(f"⚠️  Warning: Could not connect to server: {e}")
