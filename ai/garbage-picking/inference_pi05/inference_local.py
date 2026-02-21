@@ -135,6 +135,7 @@ def main():
     last_actions = None
     action_index = 0
     pred_times = []
+    current_state = None  # Track current state for delta->absolute conversion
 
     try:
         while True:
@@ -144,10 +145,21 @@ def main():
             if last_actions is None or action_index >= min(ACTIONS_TO_EXECUTE, len(last_actions)):
                 obs = robot.get_observation()
                 
+                # Extract current state from observation
+                motor_keys = sorted([k for k in obs.keys() if k.endswith(".pos")])
+                current_state = np.array([float(obs[key]) for key in motor_keys], dtype=np.float32)
+                
                 # Get predictions from RunPod server
                 t_pred_start = time.perf_counter()
-                last_actions = get_remote_prediction(obs, TASK_DESCRIPTION)
+                predicted_deltas = get_remote_prediction(obs, TASK_DESCRIPTION)
                 t_pred = time.perf_counter() - t_pred_start
+                
+                # Convert deltas to absolute actions
+                # First 5 joints: absolute = delta + current_state
+                # Last joint (gripper): already absolute
+                last_actions = predicted_deltas.copy()
+                last_actions[:, :5] = predicted_deltas[:, :5] + current_state[:5]
+                # Gripper (index 5) stays as-is
                 
                 pred_times.append(t_pred)
                 pred_times = pred_times[-10:]
