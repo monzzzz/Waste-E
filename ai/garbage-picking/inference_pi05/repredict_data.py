@@ -32,7 +32,7 @@ from openpi.policies import policy_config
 # -------------------
 DATASET_NAME = "Monzzz/garbage-picker-v2-combined"
 EPISODE_INDEX = 0
-FRAME_STRIDE = 10 # print every 10 frames
+FRAME_STRIDE = 2 # print every 10 frames
 TASK_DESCRIPTION = "Pick an object in front of you and place in the bin behind you."
 
 # Your trained checkpoint on HF
