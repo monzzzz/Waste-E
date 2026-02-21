@@ -25,9 +25,9 @@ cfg = train_config.get_config("pi05_garbage_picker")
 # Download checkpoint from HuggingFace
 print("Downloading checkpoint from HuggingFace Hub...")
 checkpoint_dir = snapshot_download(
-    repo_id="Monzzz/pi05-garbage-picker-v1",
+    repo_id="Monzzz/pi05-garbage-picker-v2-5000",
     repo_type="model",
-    cache_dir="/workspace/hf_cache",
+    cache_dir="/home/vglalala/hf_cache",
     token=os.environ.get("HF_TOKEN")  # Set this if repo is private
 )
 print(f"Checkpoint downloaded to: {checkpoint_dir}")
@@ -150,4 +150,4 @@ def health():
 
 if __name__ == '__main__':
     # Run on all interfaces so it's accessible from outside RunPod
-    app.run(host='0.0.0.0', port=8000, debug=False)
+    app.run(host='0.0.0.0', port=8001, debug=False)

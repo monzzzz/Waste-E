@@ -198,7 +198,7 @@ def main():
                 obs = robot.get_observation()
 
                 t_pred_start = time.perf_counter()
-                last_actions = get_remote_prediction(obs, TASK_DESCRIPTION)
+                predicted_deltas = get_remote_prediction(obs, TASK_DESCRIPTION)
                 t_pred = time.perf_counter() - t_pred_start
 
                 pred_times.append(t_pred)
