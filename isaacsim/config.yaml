@@ -25,6 +25,7 @@ alpamayo:
   input_image_height: 384
   confidence_threshold: 0.5
   device: "cuda"
+  nav_text: "Go straight"   # navigation instruction fed to Alpamayo — change to steer behavior
 
 pedestrians:
   dataset_path: "data/wpedestrian_sit" # folder with SIT CSV files

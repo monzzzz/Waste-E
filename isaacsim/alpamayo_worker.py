@@ -68,7 +68,8 @@ def main():
 
             image_paths = data["image_paths"]
             camera_indices = torch.tensor(data["camera_indices"], dtype=torch.int64)
-            num_frames = 4
+            nav_text = data.get("nav_text", None)  # e.g. "Turn left", "Go straight"
+            num_frames = 1
 
             frames = _build_frames(image_paths, num_frames).to(device)
 
@@ -76,6 +77,7 @@ def main():
                 frames=frames,
                 camera_indices=camera_indices,
                 num_frames_per_camera=num_frames,
+                nav_text=nav_text,
             )
 
             inputs = processor.apply_chat_template(
@@ -110,7 +112,7 @@ def main():
                         top_p=0.98,
                         temperature=0.6,
                         num_traj_samples=1,
-                        max_generation_length=256,
+                        max_generation_length=64,
                         return_extra=True,
                     )
                 )

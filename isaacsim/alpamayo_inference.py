@@ -58,6 +58,7 @@ def _waypoints_to_command(
     lookahead_steps: int = 3,
     max_linear: float = 1.2,
     max_angular: float = 1.0,
+    min_linear: float = 0.3,   # floor speed so small waypoints still drive forward
 ) -> DriveCommand:
     """Pure-pursuit: ego-frame (x=forward, y=left) waypoints → drive command."""
     n = min(lookahead_steps, len(waypoints))
@@ -67,12 +68,14 @@ def _waypoints_to_command(
     x, y = float(waypoints[n - 1, 0]), float(waypoints[n - 1, 1])
     dist = math.hypot(x, y)
     if dist < 1e-4:
-        return DriveCommand(linear_x=0.0, angular_z=0.0, waypoints=waypoints)
+        # Model predicts staying still — use minimum forward speed
+        return DriveCommand(linear_x=min_linear, angular_z=0.0, waypoints=waypoints)
 
     curvature = 2.0 * y / (dist ** 2)
     speed = min(dist / (lookahead_steps * 0.1), max_linear)
+    speed = max(speed, min_linear)  # enforce floor
     angular = float(np.clip(speed * curvature, -max_angular, max_angular))
-    linear  = float(np.clip(speed, 0.0, max_linear))
+    linear  = float(np.clip(speed, min_linear, max_linear))
     return DriveCommand(linear_x=linear, angular_z=angular, waypoints=waypoints)
 
 
@@ -126,6 +129,9 @@ class AlpamayoModel:
         self._backend: Optional[str] = None
         self._ego = _EgoHistory()
         self._tmp_dir: Optional[str] = None
+        self._last_cmd: DriveCommand = DriveCommand(linear_x=0.3, angular_z=0.0)
+        self._infer_every: int = 6   # call model every N steps, reuse between
+        self._infer_counter: int = 0
 
         if model_path:
             self._start_worker(model_path)
@@ -200,10 +206,17 @@ class AlpamayoModel:
         front_img:  Optional[np.ndarray] = None,
         left_img:   Optional[np.ndarray] = None,
         right_img:  Optional[np.ndarray] = None,
-        tele_img:   Optional[np.ndarray] = None,  # front telephoto; reuses front if None
+        tele_img:   Optional[np.ndarray] = None,
+        nav_text:   Optional[str] = None,  # e.g. "Turn left", "Go straight", "Stop"
     ) -> DriveCommand:
         if self._backend is None:
             return DriveCommand(linear_x=0.3, angular_z=0.0, confidence=0.0)
+
+        # Only call the model every _infer_every steps — reuse last result between calls
+        self._infer_counter += 1
+        if self._infer_counter % self._infer_every != 0:
+            return self._last_cmd
+
         if tele_img is None:
             tele_img = front_img  # SiT has no telephoto — reuse front
 
@@ -222,6 +235,7 @@ class AlpamayoModel:
                                    _CAM_IDX_FRONT_RIGHT, _CAM_IDX_FRONT_TELE],
                 "ego_history_xyz": ego_xyz,
                 "ego_history_rot": ego_rot,
+                "nav_text": nav_text,
             }
             self._proc.stdin.write(json.dumps(request) + "\n")
             self._proc.stdin.flush()
@@ -241,7 +255,8 @@ class AlpamayoModel:
             if len(waypoints) == 0:
                 return DriveCommand(linear_x=0.3, angular_z=0.0, confidence=0.5)
 
-            return _waypoints_to_command(waypoints)
+            self._last_cmd = _waypoints_to_command(waypoints)
+            return self._last_cmd
 
         except Exception as e:
             print(f"[Alpamayo] Inference error: {e}")
