@@ -463,7 +463,8 @@ class WasteESimEnv:
         right = self._get_camera_image("right")
         tele  = self._get_camera_image("tele")   # reuses front cam; no tele in SiT
 
-        cmd = self.alpamayo.infer(front, left, right, tele)
+        nav_text = self.cfg.get("alpamayo", {}).get("nav_text", None)
+        cmd = self.alpamayo.infer(front, left, right, tele, nav_text=nav_text)
         self._apply_drive_command(cmd)
 
         self._sim_frame += 1
