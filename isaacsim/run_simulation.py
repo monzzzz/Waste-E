@@ -61,7 +61,13 @@ def main():
         cfg = yaml.safe_load(f)
 
     headless = args.headless or not cfg["simulation"].get("headless", False)
-    app = SimulationApp({"headless": headless})
+    app_cfg = {
+        "headless": headless,
+        "physics_gpu": 0,
+        "multi_gpu": False,
+        "extra_args": ["--/physics/cudaDevice=0"],
+    }
+    app = SimulationApp(app_cfg)
 
     # Apply CLI overrides to config
     if args.max_steps is not None:
@@ -86,8 +92,12 @@ def main():
         try:
             env.setup()
             env.run()
-        except Exception:
+        except Exception as e:
+            print(f"[run_simulation] CAUGHT EXCEPTION: {type(e).__name__}: {e}", flush=True)
             traceback.print_exc()
+        except BaseException as e:
+            print(f"[run_simulation] CAUGHT BASE EXCEPTION: {type(e).__name__}: {e}", flush=True)
+            raise
     finally:
         os.unlink(tmp_cfg_path)
         app.close()

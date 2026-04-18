@@ -4,6 +4,7 @@ simulation:
   rendering_dt: 1.0 / 60.0
   max_steps: 10000
   seed: 42
+  no_cameras: false
 
 scene:
   world_usd: ""                        # leave empty to use a flat ground plane
@@ -18,11 +19,12 @@ robot:
   max_angular_speed: 1.0              # rad/s
 
 alpamayo:
-  model_path: "../alpamayo-1.5-10b"                       # path to alpamayo .onnx or .pt checkpoint
+  model_path: "../alpamayo-1.5-10b"
+  sit_sequence_dir: "../sit_dataset/FullSet_v.1.0.0/Cafeteria/Cafeteria_1"  # real SiT images
   input_image_width: 640
   input_image_height: 384
   confidence_threshold: 0.5
-  device: "cuda"                       # "cuda" or "cpu"
+  device: "cuda"
 
 pedestrians:
   dataset_path: "data/wpedestrian_sit" # folder with SIT CSV files

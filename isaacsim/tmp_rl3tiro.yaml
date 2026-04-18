@@ -1,0 +1,89 @@
+alpamayo:
+  confidence_threshold: 0.5
+  device: cuda
+  input_image_height: 384
+  input_image_width: 640
+  model_path: ../alpamayo-1.5-10b
+  sit_sequence_dir: ../sit_dataset/FullSet_v.1.0.0/Cafeteria/Cafeteria_1
+cameras:
+  front:
+    fov: 90
+    orientation:
+    - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+    position:
+    - 0.3
+    - 0.0
+    - 0.4
+    resolution:
+    - 640
+    - 384
+  left:
+    fov: 90
+    orientation:
+    - 0.0
+    - 0.0
+    - 0.707
+    - 0.707
+    position:
+    - 0.0
+    - 0.2
+    - 0.4
+    resolution:
+    - 640
+    - 384
+  right:
+    fov: 90
+    orientation:
+    - 0.0
+    - 0.0
+    - -0.707
+    - 0.707
+    position:
+    - 0.0
+    - -0.2
+    - 0.4
+    resolution:
+    - 640
+    - 384
+logging:
+  log_metrics: true
+  output_dir: output
+  save_video: true
+  video_fps: 30
+pedestrians:
+  dataset_path: data/wpedestrian_sit
+  loop_trajectories: true
+  num_pedestrians: 20
+  playback_speed: 1.0
+  scale:
+  - 1.0
+  - 1.0
+  - 1.0
+  usd_path: ''
+robot:
+  max_angular_speed: 1.0
+  max_linear_speed: 1.2
+  start_orientation:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  start_position:
+  - 0.0
+  - 0.0
+  - 0.1
+  usd_path: ''
+scene:
+  ground_plane_size: 50.0
+  stage_units_in_meters: 1.0
+  world_usd: ''
+simulation:
+  headless: true
+  max_steps: 200
+  no_cameras: false
+  physics_dt: 1.0 / 60.0
+  rendering_dt: 1.0 / 60.0
+  seed: 42
