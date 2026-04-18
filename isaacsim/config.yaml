@@ -1,0 +1,56 @@
+simulation:
+  headless: false
+  physics_dt: 1.0 / 60.0
+  rendering_dt: 1.0 / 60.0
+  max_steps: 10000
+  seed: 42
+
+scene:
+  world_usd: ""                        # leave empty to use a flat ground plane
+  stage_units_in_meters: 1.0
+  ground_plane_size: 50.0
+
+robot:
+  usd_path: ""                         # path to your Waste-E robot USD asset
+  start_position: [0.0, 0.0, 0.1]     # x, y, z in metres
+  start_orientation: [0.0, 0.0, 0.0, 1.0]   # quaternion xyzw
+  max_linear_speed: 1.2               # m/s
+  max_angular_speed: 1.0              # rad/s
+
+alpamayo:
+  model_path: "../alpamayo-1.5-10b"                       # path to alpamayo .onnx or .pt checkpoint
+  input_image_width: 640
+  input_image_height: 384
+  confidence_threshold: 0.5
+  device: "cuda"                       # "cuda" or "cpu"
+
+pedestrians:
+  dataset_path: "data/wpedestrian_sit" # folder with SIT CSV files
+  num_pedestrians: 20                  # max pedestrians to spawn simultaneously
+  usd_path: ""                         # pedestrian character USD; empty = primitive capsule
+  scale: [1.0, 1.0, 1.0]
+  loop_trajectories: true             # replay trajectories in a loop
+  playback_speed: 1.0                 # 1.0 = real time
+
+cameras:
+  front:
+    position: [0.3, 0.0, 0.4]
+    orientation: [0.0, 0.0, 0.0, 1.0]
+    resolution: [640, 384]
+    fov: 90
+  left:
+    position: [0.0, 0.2, 0.4]
+    orientation: [0.0, 0.0, 0.707, 0.707]
+    resolution: [640, 384]
+    fov: 90
+  right:
+    position: [0.0, -0.2, 0.4]
+    orientation: [0.0, 0.0, -0.707, 0.707]
+    resolution: [640, 384]
+    fov: 90
+
+logging:
+  output_dir: "output"
+  save_video: true
+  video_fps: 30
+  log_metrics: true
