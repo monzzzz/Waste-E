@@ -51,7 +51,10 @@ def main():
     args = parse_args()
 
     # Isaac Sim app launcher must be created before any omni imports
-    from omni.isaac.kit import SimulationApp
+    try:
+        from isaacsim import SimulationApp
+    except ImportError:
+        from omni.isaac.kit import SimulationApp
 
     import yaml
     with open(args.config) as f:
