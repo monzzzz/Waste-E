@@ -1,30 +1,56 @@
 """
 NVIDIA Alpamayo 1.5 inference wrapper for Waste-E Isaac Sim.
 
-Alpamayo outputs 64 future waypoints at 10 Hz (6.4 s horizon).
-We take the first few waypoints and convert them to (linear_x, angular_z)
-commands for the differential-drive Waste-E robot.
+Alpamayo runs in a Python 3.12 subprocess (alpamayo_worker.py) because the
+alpamayo1_5 package requires Python 3.12 while Isaac Sim uses Python 3.11.
 
-Requires:
-  pip install git+https://github.com/NVlabs/alpamayo1.5.git
-  pip install transformers>=4.57.1 accelerate torch>=2.8
+Communication: newline-delimited JSON on stdin/stdout.
 """
 
 from __future__ import annotations
 
+import json
 import math
-from dataclasses import dataclass
-from typing import List, Optional
+import os
+import subprocess
+import tempfile
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Deque, List, Optional, Tuple
 
 import numpy as np
 
 
+# Camera index constants matching Alpamayo's training camera set:
+#   0 = camera_cross_left_120fov   (Front left)
+#   1 = camera_front_wide_120fov   (Front wide 120°)
+#   2 = camera_cross_right_120fov  (Front right)
+#   6 = camera_front_tele_30fov    (Front telephoto)
+# SiT only has 5 × 360° cameras, so we map best-effort:
+#   SiT cam2 → idx 0 (front-left), SiT cam3 → idx 1 (front wide),
+#   SiT cam4 → idx 2 (front-right), SiT cam3 reused → idx 6 (telephoto)
+_CAM_IDX_FRONT_LEFT  = 0
+_CAM_IDX_FRONT_WIDE  = 1
+_CAM_IDX_FRONT_RIGHT = 2
+_CAM_IDX_FRONT_TELE  = 6
+
+# Worker Python (3.12 venv with alpamayo1_5 installed)
+_WORKER_PYTHON = os.environ.get(
+    "ALPAMAYO_PYTHON",
+    "/opt/alpamayo-env/bin/python",
+)
+_WORKER_SCRIPT = os.path.join(os.path.dirname(__file__), "alpamayo_worker.py")
+
+# History window: 16 steps @ 10 Hz = 1.6 s
+_HISTORY_LEN = 16
+
+
 @dataclass
 class DriveCommand:
-    linear_x: float    # forward velocity (m/s)
-    angular_z: float   # yaw rate         (rad/s)
+    linear_x: float
+    angular_z: float
     confidence: float = 1.0
-    waypoints: Optional[np.ndarray] = None   # (N, 2) xy waypoints if available
+    waypoints: Optional[np.ndarray] = None
 
 
 def _waypoints_to_command(
@@ -33,28 +59,52 @@ def _waypoints_to_command(
     max_linear: float = 1.2,
     max_angular: float = 1.0,
 ) -> DriveCommand:
-    """
-    Pure-pursuit conversion from Alpamayo waypoints → drive command.
-    waypoints: (N, 2+) array of (x, y, ...) in ego frame (x=forward, y=left).
-    """
+    """Pure-pursuit: ego-frame (x=forward, y=left) waypoints → drive command."""
     n = min(lookahead_steps, len(waypoints))
     if n == 0:
         return DriveCommand(linear_x=0.0, angular_z=0.0, confidence=0.0)
 
-    target = waypoints[n - 1, :2]   # (x, y) of lookahead point
-    x, y = float(target[0]), float(target[1])
+    x, y = float(waypoints[n - 1, 0]), float(waypoints[n - 1, 1])
     dist = math.hypot(x, y)
-
     if dist < 1e-4:
         return DriveCommand(linear_x=0.0, angular_z=0.0, waypoints=waypoints)
 
-    # Pure pursuit curvature: κ = 2y / dist²
     curvature = 2.0 * y / (dist ** 2)
-    speed = min(dist / (lookahead_steps * 0.1), max_linear)   # dt=0.1 s per step
+    speed = min(dist / (lookahead_steps * 0.1), max_linear)
     angular = float(np.clip(speed * curvature, -max_angular, max_angular))
     linear  = float(np.clip(speed, 0.0, max_linear))
-
     return DriveCommand(linear_x=linear, angular_z=angular, waypoints=waypoints)
+
+
+class _EgoHistory:
+    """Maintains a rolling window of ego-frame position/rotation history."""
+
+    def __init__(self, length: int = _HISTORY_LEN):
+        self.length = length
+        self._xyz: Deque[np.ndarray] = deque(maxlen=length)
+        self._rot: Deque[np.ndarray] = deque(maxlen=length)
+
+    def update(self, pos: np.ndarray, rot_mat: np.ndarray):
+        self._xyz.append(pos.astype(np.float32))
+        self._rot.append(rot_mat.astype(np.float32))
+
+    def as_tensors(self) -> Tuple[List, List]:
+        """Return (ego_history_xyz, ego_history_rot) as nested Python lists."""
+        # Pad with the oldest entry (or zeros) until we have self.length frames
+        xyz_list = list(self._xyz)
+        rot_list = list(self._rot)
+
+        pad_xyz = np.zeros(3, dtype=np.float32) if not xyz_list else xyz_list[0]
+        pad_rot = np.eye(3, dtype=np.float32)   if not rot_list else rot_list[0]
+
+        while len(xyz_list) < self.length:
+            xyz_list.insert(0, pad_xyz)
+            rot_list.insert(0, pad_rot)
+
+        # Shape: (1, 1, T, 3) and (1, 1, T, 3, 3)
+        xyz_arr = np.stack(xyz_list)[None, None]   # (1,1,T,3)
+        rot_arr = np.stack(rot_list)[None, None]   # (1,1,T,3,3)
+        return xyz_arr.tolist(), rot_arr.tolist()
 
 
 class AlpamayoModel:
@@ -71,154 +121,131 @@ class AlpamayoModel:
         self.input_height = input_height
         self.confidence_threshold = confidence_threshold
         self.device = device
-        self._model = None
-        self._processor = None
+
+        self._proc: Optional[subprocess.Popen] = None
         self._backend: Optional[str] = None
+        self._ego = _EgoHistory()
+        self._tmp_dir: Optional[str] = None
 
         if model_path:
-            self._load(model_path)
+            self._start_worker(model_path)
 
     # ------------------------------------------------------------------
-    def _load(self, path: str):
-        import os
-        if not os.path.isdir(path) and not os.path.isfile(path):
-            raise FileNotFoundError(f"Alpamayo model not found: {path}")
-
-        self._load_alpamayo_package(path)
-
-    def _load_alpamayo_package(self, path: str):
-        """Load using the official alpamayo1_5 package from NVlabs/alpamayo1.5."""
-        try:
-            import torch
-            # Try the official alpamayo1_5 package first
-            from alpamayo1_5 import AlpamayoForCausalLM, AlpamayoProcessor
-
-            print(f"[Alpamayo] Loading model from {path} ...")
-            self._processor = AlpamayoProcessor.from_pretrained(path)
-            try:
-                from transformers import BitsAndBytesConfig
-                bnb_cfg = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
-                self._model = AlpamayoForCausalLM.from_pretrained(
-                    path, quantization_config=bnb_cfg, device_map="auto"
-                )
-                print("[Alpamayo] Loaded in 4-bit quantization (low VRAM mode).")
-            except Exception:
-                self._model = AlpamayoForCausalLM.from_pretrained(
-                    path, torch_dtype=torch.bfloat16, device_map="auto"
-                )
-            self._model.eval()
-            self._backend = "alpamayo1_5"
-            print("[Alpamayo] Model loaded successfully via alpamayo1_5 package.")
+    def _start_worker(self, model_path: str):
+        if not os.path.exists(_WORKER_PYTHON):
+            print(f"[Alpamayo] Worker Python not found: {_WORKER_PYTHON}")
+            print("[Alpamayo] Running with dummy 0.3 m/s forward command.")
             return
-        except ImportError:
-            print("[Alpamayo] alpamayo1_5 package not found.")
-            print("[Alpamayo] Install it with:")
-            print("  <isaac_sim>/python.sh -m pip install git+https://github.com/NVlabs/alpamayo1.5.git")
-        except Exception as e:
-            import traceback
-            print(f"[Alpamayo] alpamayo1_5 load error: {e}")
-            traceback.print_exc()
 
-        # Fallback: try generic HuggingFace AutoModel with trust_remote_code
-        try:
-            import torch
-            from transformers import AutoProcessor, AutoModelForCausalLM
-            print(f"[Alpamayo] Trying AutoModelForCausalLM with trust_remote_code=True ...")
-            self._processor = AutoProcessor.from_pretrained(
-                path, trust_remote_code=True
-            )
+        print(f"[Alpamayo] Starting worker ({_WORKER_PYTHON}) …")
+        self._proc = subprocess.Popen(
+            [_WORKER_PYTHON, _WORKER_SCRIPT],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        self._tmp_dir = tempfile.mkdtemp(prefix="alpamayo_imgs_")
+
+        # Send init
+        init = {"model_path": model_path, "device": self.device}
+        self._proc.stdin.write(json.dumps(init) + "\n")
+        self._proc.stdin.flush()
+
+        # Wait for "loading" then "ready"
+        for _ in range(2):
+            raw = self._proc.stdout.readline()
+            if not raw:
+                break
+            resp = json.loads(raw)
+            print(f"[Alpamayo] Worker: {resp.get('status', '?')}")
+            if resp.get("status") == "ready":
+                self._backend = "alpamayo1_5"
+                print("[Alpamayo] Model loaded and ready.")
+                return
+
+        print("[Alpamayo] Worker failed to reach ready state — using dummy command.")
+        self._cleanup_proc()
+
+    def _cleanup_proc(self):
+        if self._proc:
             try:
-                from transformers import BitsAndBytesConfig
-                bnb_cfg = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
-                self._model = AutoModelForCausalLM.from_pretrained(
-                    path, trust_remote_code=True, quantization_config=bnb_cfg, device_map="auto"
-                )
-                print("[Alpamayo] Loaded in 4-bit quantization (low VRAM mode).")
+                self._proc.terminate()
             except Exception:
-                self._model = AutoModelForCausalLM.from_pretrained(
-                    path, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map="auto"
-                )
-            self._model.eval()
-            self._backend = "transformers"
-            print("[Alpamayo] Model loaded via AutoModelForCausalLM.")
-            return
-        except Exception as e:
-            print(f"[Alpamayo] AutoModel fallback failed: {e}")
-
-        print("[Alpamayo] All load attempts failed — using dummy 0.3 m/s forward command.")
+                pass
+            self._proc = None
+        import shutil
+        if self._tmp_dir and os.path.isdir(self._tmp_dir):
+            shutil.rmtree(self._tmp_dir, ignore_errors=True)
+            self._tmp_dir = None
 
     # ------------------------------------------------------------------
-    def _prepare_images(self, *images: Optional[np.ndarray]) -> List[np.ndarray]:
+    def _save_image(self, img: Optional[np.ndarray], name: str) -> Optional[str]:
+        """Write img (H×W×3 uint8) to a temp PNG; return path or None."""
+        if img is None or self._tmp_dir is None:
+            return None
         import cv2
-        out = []
-        # Alpamayo expects 1080x1920; processor will downsample to 320x576
-        target_h, target_w = 1080, 1920
-        for img in images:
-            if img is None:
-                img = np.zeros((target_h, target_w, 3), dtype=np.uint8)
-            else:
-                img = cv2.resize(img, (target_w, target_h))
-            out.append(img)
-        # Pad to 4 cameras if needed (Alpamayo default = 4)
-        while len(out) < 4:
-            out.append(np.zeros((target_h, target_w, 3), dtype=np.uint8))
-        return out
+        path = os.path.join(self._tmp_dir, f"{name}.png")
+        cv2.imwrite(path, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+        return path
 
-    def _run_alpamayo1_5(
-        self, front, left, right
-    ) -> DriveCommand:
-        import torch
-        images = self._prepare_images(front, left, right)
-
-        # Build a minimal prompt — can be expanded with navigation guidance
-        prompt = "Drive forward safely."
-
-        inputs = self._processor(
-            images=images,
-            text=prompt,
-            return_tensors="pt",
-        ).to(self.device)
-
-        with torch.no_grad():
-            outputs = self._model.generate(
-                **inputs,
-                max_new_tokens=256,
-                do_sample=False,
-            )
-
-        # Decode trajectory waypoints from model output
-        waypoints = self._extract_waypoints(outputs)
-        if waypoints is not None and len(waypoints) > 0:
-            return _waypoints_to_command(waypoints)
-        return DriveCommand(linear_x=0.3, angular_z=0.0, confidence=0.5)
-
-    def _extract_waypoints(self, outputs) -> Optional[np.ndarray]:
-        """Extract (N, 2) xy waypoints from model outputs if available."""
-        try:
-            if hasattr(outputs, "waypoints"):
-                return np.array(outputs.waypoints)
-            if hasattr(outputs, "trajectory"):
-                traj = outputs.trajectory
-                if hasattr(traj, "cpu"):
-                    traj = traj.cpu().numpy()
-                return np.array(traj)[..., :2]
-        except Exception:
-            pass
-        return None
+    def update_ego(self, pos: np.ndarray, rot_mat: np.ndarray):
+        """Call each simulation step with the robot's world pose."""
+        self._ego.update(pos, rot_mat)
 
     # ------------------------------------------------------------------
     def infer(
         self,
-        front_img: Optional[np.ndarray] = None,
-        left_img:  Optional[np.ndarray] = None,
-        right_img: Optional[np.ndarray] = None,
+        front_img:  Optional[np.ndarray] = None,
+        left_img:   Optional[np.ndarray] = None,
+        right_img:  Optional[np.ndarray] = None,
+        tele_img:   Optional[np.ndarray] = None,  # front telephoto; reuses front if None
     ) -> DriveCommand:
         if self._backend is None:
-            # Dummy mode
             return DriveCommand(linear_x=0.3, angular_z=0.0, confidence=0.0)
+        if tele_img is None:
+            tele_img = front_img  # SiT has no telephoto — reuse front
 
         try:
-            return self._run_alpamayo1_5(front_img, left_img, right_img)
+            front_path = self._save_image(front_img, "front")
+            left_path  = self._save_image(left_img,  "left")
+            right_path = self._save_image(right_img, "right")
+            tele_path  = self._save_image(tele_img,  "tele")
+
+            ego_xyz, ego_rot = self._ego.as_tensors()
+
+            # Send 4 cameras matching Alpamayo's training set
+            request = {
+                "image_paths":    [left_path, front_path, right_path, tele_path],
+                "camera_indices": [_CAM_IDX_FRONT_LEFT, _CAM_IDX_FRONT_WIDE,
+                                   _CAM_IDX_FRONT_RIGHT, _CAM_IDX_FRONT_TELE],
+                "ego_history_xyz": ego_xyz,
+                "ego_history_rot": ego_rot,
+            }
+            self._proc.stdin.write(json.dumps(request) + "\n")
+            self._proc.stdin.flush()
+
+            raw = self._proc.stdout.readline()
+            if not raw:
+                print("[Alpamayo] Worker closed unexpectedly.")
+                self._backend = None
+                return DriveCommand(linear_x=0.3, angular_z=0.0, confidence=0.0)
+
+            resp = json.loads(raw)
+            if resp.get("status") == "error":
+                print(f"[Alpamayo] Worker error: {resp.get('msg', '')[:200]}")
+                return DriveCommand(linear_x=0.3, angular_z=0.0, confidence=0.0)
+
+            waypoints = np.array(resp["waypoints"])  # (T, 2)
+            if len(waypoints) == 0:
+                return DriveCommand(linear_x=0.3, angular_z=0.0, confidence=0.5)
+
+            return _waypoints_to_command(waypoints)
+
         except Exception as e:
             print(f"[Alpamayo] Inference error: {e}")
             return DriveCommand(linear_x=0.3, angular_z=0.0, confidence=0.0)
+
+    def __del__(self):
+        self._cleanup_proc()

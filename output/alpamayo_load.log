@@ -1,5 +1,5 @@
 raw model_path from config: '../alpamayo-1.5-10b'
-resolved model_path: '/home/elmond/Code/Waste-E/isaacsim/../alpamayo-1.5-10b'
+resolved model_path: '/workspace/Waste-E/isaacsim/../alpamayo-1.5-10b'
 exists: True
 isdir:  True
-safetensors found: ['/home/elmond/Code/Waste-E/isaacsim/../alpamayo-1.5-10b/model-00005-of-00005.safetensors', '/home/elmond/Code/Waste-E/isaacsim/../alpamayo-1.5-10b/model-00002-of-00005.safetensors', '/home/elmond/Code/Waste-E/isaacsim/../alpamayo-1.5-10b/model-00001-of-00005.safetensors', '/home/elmond/Code/Waste-E/isaacsim/../alpamayo-1.5-10b/model-00004-of-00005.safetensors', '/home/elmond/Code/Waste-E/isaacsim/../alpamayo-1.5-10b/model-00003-of-00005.safetensors']
+safetensors found: ['/workspace/Waste-E/isaacsim/../alpamayo-1.5-10b/model-00001-of-00005.safetensors', '/workspace/Waste-E/isaacsim/../alpamayo-1.5-10b/model-00002-of-00005.safetensors', '/workspace/Waste-E/isaacsim/../alpamayo-1.5-10b/model-00003-of-00005.safetensors', '/workspace/Waste-E/isaacsim/../alpamayo-1.5-10b/model-00004-of-00005.safetensors', '/workspace/Waste-E/isaacsim/../alpamayo-1.5-10b/model-00005-of-00005.safetensors']

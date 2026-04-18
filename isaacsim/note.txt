@@ -1,0 +1,13 @@
+# 1. Isaac Sim (pip into system Python 3.11)
+pip install --extra-index-url https://pypi.ngc.nvidia.com isaacsim==5.1.0 isaacsim-extscache-physics==5.1.0 isaacsim-extscache-kit==5.1.0 isaacsim-extscache-kit-sdk==5.1.0
+
+# 2. Accept EULA
+echo "yes" > /usr/local/lib/python3.11/dist-packages/isaacsim/kit/EULA_ACCEPTED
+
+# 3. Python 3.12 venv for Alpamayo
+python3.12 -m venv /opt/alpamayo-env
+/opt/alpamayo-env/bin/pip install torch==2.6.0+cu124 torchvision==0.21.0+cu124 --index-url https://download.pytorch.org/whl/cu124
+/opt/alpamayo-env/bin/pip install transformers>=4.57.1 accelerate einops hydra-core pillow opencv-python-headless scipy
+
+# Copy alpamayo1_5 source
+cp -r /tmp/alpamayo1.5/src/alpamayo1_5 /opt/alpamayo-env/lib/python3.12/site-packages/
