@@ -49,7 +49,8 @@ class DCMotor:
         self.current_speed = 0
         
         # Setup GPIO
-        GPIO.setmode(board_mode)
+        if GPIO.getmode() is None:
+            GPIO.setmode(board_mode)
         GPIO.setwarnings(False)
         
         # Setup pins

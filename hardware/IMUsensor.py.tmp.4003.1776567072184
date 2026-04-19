@@ -1,0 +1,365 @@
+"""
+BNO055 9-DOF IMU over UART — pyserial implementation for Orange Pi / Linux.
+
+Replaces the CircuitPython busio.UART version which does not work on this platform.
+
+Hardware wiring (UART mode requires PS0=HIGH, PS1=LOW on the BNO055 module):
+  BNO055 TX  →  Orange Pi RX pin
+  BNO055 RX  →  Orange Pi TX pin
+  VIN        →  3.3 V or 5 V
+  GND        →  GND
+
+Default port: /dev/ttyS6 at 115200 baud.
+"""
+
+from __future__ import annotations
+
+import time
+from typing import Any, Dict, Optional, Tuple
+
+import serial
+
+
+# ---------------------------------------------------------------------------
+# BNO055 UART protocol constants
+# ---------------------------------------------------------------------------
+
+_START   = 0xAA
+_READ    = 0x01
+_WRITE   = 0x00
+_RESP_OK  = 0xBB
+_RESP_ERR = 0xEE
+
+# Register map
+_REG_CHIP_ID      = 0x00   # Should read 0xA0
+_REG_OPR_MODE     = 0x3D
+_REG_UNIT_SEL     = 0x3B
+_REG_CALIB_STAT   = 0x35
+_REG_TEMP         = 0x34
+_REG_EUL_H_LSB    = 0x1A   # Euler heading, roll, pitch  (6 bytes)
+_REG_QUA_W_LSB    = 0x20   # Quaternion W, X, Y, Z       (8 bytes)
+_REG_GYRO_X_LSB   = 0x14   # Gyroscope X, Y, Z           (6 bytes)
+_REG_LIA_X_LSB    = 0x28   # Linear accel X, Y, Z        (6 bytes)
+_REG_MAG_X_LSB    = 0x0E   # Magnetometer X, Y, Z        (6 bytes)
+_REG_GRV_X_LSB    = 0x2E   # Gravity vector X, Y, Z      (6 bytes)
+
+# Operation modes
+_MODE_CONFIG = 0x00
+_MODE_NDOF   = 0x0C   # Full 9-DOF sensor fusion
+
+# Conversion scales
+_EULER_SCALE = 1.0 / 16.0       # degrees
+_QUAT_SCALE  = 1.0 / (1 << 14) # unit quaternion
+_ACCEL_SCALE = 1.0 / 100.0      # m/s²
+_GYRO_SCALE  = 1.0 / 16.0       # dps
+_MAG_SCALE   = 1.0 / 16.0       # µT
+
+
+def _s16(lsb: int, msb: int) -> int:
+    val = (msb << 8) | lsb
+    return val - 65536 if val >= 32768 else val
+
+
+# ---------------------------------------------------------------------------
+# BNO055_IMU
+# ---------------------------------------------------------------------------
+
+class BNO055_IMU:
+    """
+    BNO055 9-DOF Absolute Orientation IMU via UART (pyserial).
+
+    Physical GPIO Connections:
+      BNO055 VIN → Orange Pi Pin 1 (3.3 V) or Pin 2 (5 V)
+      BNO055 GND → Orange Pi GND
+      BNO055 TX  → Orange Pi RX (e.g. Pin 10 for UART1)
+      BNO055 RX  → Orange Pi TX (e.g. Pin 8  for UART1)
+
+    The BNO055 module must be in UART mode:
+      PS0 pin = HIGH, PS1 pin = LOW
+    (Many breakout boards have PS0/PS1 solderable pads or jumpers.)
+    """
+
+    def __init__(self, uart_port: str = "/dev/ttyS6", baudrate: int = 115200) -> None:
+        self.uart_port = uart_port
+        self.baudrate = baudrate
+        self._ser: serial.Serial | None = None
+
+    def connect(self) -> bool:
+        """Open serial port and initialise the sensor into NDOF fusion mode."""
+        try:
+            self._ser = serial.Serial(
+                port=self.uart_port,
+                baudrate=self.baudrate,
+                timeout=0.1,
+            )
+            self._ser.reset_input_buffer()
+            time.sleep(0.05)
+
+            # Verify chip ID (0xA0 for BNO055)
+            chip_id_data = self._read_reg(_REG_CHIP_ID, 1)
+            if chip_id_data is not None and chip_id_data[0] != 0xA0:
+                print(f"  Warning: unexpected chip ID 0x{chip_id_data[0]:02X} (expected 0xA0)")
+
+            # Enter config mode, then NDOF fusion mode
+            self._write_reg(_REG_OPR_MODE, [_MODE_CONFIG])
+            time.sleep(0.025)
+            self._write_reg(_REG_OPR_MODE, [_MODE_NDOF])
+            time.sleep(0.02)
+            return True
+
+        except Exception as exc:
+            print(f"Error connecting to BNO055 via UART: {exc}")
+            return False
+
+    def disconnect(self) -> None:
+        """Close the serial connection."""
+        if self._ser and self._ser.is_open:
+            self._ser.close()
+        self._ser = None
+
+    # ------------------------------------------------------------------
+    # Sensor readings
+    # ------------------------------------------------------------------
+
+    def get_calibration_status(self) -> Optional[Dict[str, int]]:
+        """
+        Calibration status for each sensor (0 = uncalibrated, 3 = fully calibrated).
+        Returns dict with keys: system, gyro, accel, mag.
+        """
+        data = self._read_reg(_REG_CALIB_STAT, 1)
+        if data is None:
+            return None
+        b = data[0]
+        return {
+            "system": (b >> 6) & 0x03,
+            "gyro":   (b >> 4) & 0x03,
+            "accel":  (b >> 2) & 0x03,
+            "mag":     b       & 0x03,
+        }
+
+    def is_calibrated(self) -> bool:
+        status = self.get_calibration_status()
+        return status is not None and all(v == 3 for v in status.values())
+
+    def get_euler_angles(self) -> Optional[Tuple[float, float, float]]:
+        """Returns (heading, roll, pitch) in degrees."""
+        data = self._read_reg(_REG_EUL_H_LSB, 6)
+        if data is None or len(data) < 6:
+            return None
+        return (
+            _s16(data[0], data[1]) * _EULER_SCALE,
+            _s16(data[2], data[3]) * _EULER_SCALE,
+            _s16(data[4], data[5]) * _EULER_SCALE,
+        )
+
+    def get_quaternion(self) -> Optional[Tuple[float, float, float, float]]:
+        """Returns (w, x, y, z) unit quaternion."""
+        data = self._read_reg(_REG_QUA_W_LSB, 8)
+        if data is None or len(data) < 8:
+            return None
+        return (
+            _s16(data[0], data[1]) * _QUAT_SCALE,
+            _s16(data[2], data[3]) * _QUAT_SCALE,
+            _s16(data[4], data[5]) * _QUAT_SCALE,
+            _s16(data[6], data[7]) * _QUAT_SCALE,
+        )
+
+    def get_gyroscope(self) -> Optional[Tuple[float, float, float]]:
+        """Returns (x, y, z) angular velocity in degrees/s."""
+        data = self._read_reg(_REG_GYRO_X_LSB, 6)
+        if data is None or len(data) < 6:
+            return None
+        return (
+            _s16(data[0], data[1]) * _GYRO_SCALE,
+            _s16(data[2], data[3]) * _GYRO_SCALE,
+            _s16(data[4], data[5]) * _GYRO_SCALE,
+        )
+
+    def get_accelerometer(self) -> Optional[Tuple[float, float, float]]:
+        """Returns (x, y, z) linear acceleration in m/s² (gravity removed)."""
+        data = self._read_reg(_REG_LIA_X_LSB, 6)
+        if data is None or len(data) < 6:
+            return None
+        return (
+            _s16(data[0], data[1]) * _ACCEL_SCALE,
+            _s16(data[2], data[3]) * _ACCEL_SCALE,
+            _s16(data[4], data[5]) * _ACCEL_SCALE,
+        )
+
+    def get_magnetometer(self) -> Optional[Tuple[float, float, float]]:
+        """Returns (x, y, z) magnetic field in µT."""
+        data = self._read_reg(_REG_MAG_X_LSB, 6)
+        if data is None or len(data) < 6:
+            return None
+        return (
+            _s16(data[0], data[1]) * _MAG_SCALE,
+            _s16(data[2], data[3]) * _MAG_SCALE,
+            _s16(data[4], data[5]) * _MAG_SCALE,
+        )
+
+    def get_gravity(self) -> Optional[Tuple[float, float, float]]:
+        """Returns (x, y, z) gravity vector in m/s²."""
+        data = self._read_reg(_REG_GRV_X_LSB, 6)
+        if data is None or len(data) < 6:
+            return None
+        return (
+            _s16(data[0], data[1]) * _ACCEL_SCALE,
+            _s16(data[2], data[3]) * _ACCEL_SCALE,
+            _s16(data[4], data[5]) * _ACCEL_SCALE,
+        )
+
+    def get_temperature(self) -> Optional[int]:
+        """Returns temperature in °C."""
+        data = self._read_reg(_REG_TEMP, 1)
+        if data is None:
+            return None
+        t = data[0]
+        return t - 256 if t > 127 else t
+
+    def get_all_data(self) -> Optional[Dict[str, Any]]:
+        """Returns all sensor readings in a single dict."""
+        euler   = self.get_euler_angles()
+        quat    = self.get_quaternion()
+        accel   = self.get_accelerometer()
+        gyro    = self.get_gyroscope()
+        mag     = self.get_magnetometer()
+        gravity = self.get_gravity()
+        temp    = self.get_temperature()
+        cal     = self.get_calibration_status()
+        return {
+            "euler": {
+                "heading": euler[0] if euler else None,
+                "roll":    euler[1] if euler else None,
+                "pitch":   euler[2] if euler else None,
+            },
+            "quaternion": {
+                "w": quat[0] if quat else None,
+                "x": quat[1] if quat else None,
+                "y": quat[2] if quat else None,
+                "z": quat[3] if quat else None,
+            },
+            "accelerometer": {
+                "x": accel[0] if accel else None,
+                "y": accel[1] if accel else None,
+                "z": accel[2] if accel else None,
+            },
+            "gyroscope": {
+                "x": gyro[0] if gyro else None,
+                "y": gyro[1] if gyro else None,
+                "z": gyro[2] if gyro else None,
+            },
+            "magnetometer": {
+                "x": mag[0] if mag else None,
+                "y": mag[1] if mag else None,
+                "z": mag[2] if mag else None,
+            },
+            "gravity": {
+                "x": gravity[0] if gravity else None,
+                "y": gravity[1] if gravity else None,
+                "z": gravity[2] if gravity else None,
+            },
+            "temperature": temp,
+            "calibration": cal,
+        }
+
+    def wait_for_calibration(self, timeout: int = 60) -> bool:
+        """Block until fully calibrated or timeout. Move sensor in figure-8."""
+        print("Calibrating BNO055 — move the sensor in a figure-8 pattern...")
+        start = time.time()
+        while time.time() - start < timeout:
+            status = self.get_calibration_status()
+            if status:
+                print(
+                    f"  Sys={status['system']}/3  Gyro={status['gyro']}/3  "
+                    f"Accel={status['accel']}/3  Mag={status['mag']}/3"
+                )
+                if self.is_calibrated():
+                    print("Fully calibrated!")
+                    return True
+            time.sleep(1)
+        print("Calibration timeout.")
+        return False
+
+    # ------------------------------------------------------------------
+    # Low-level BNO055 UART protocol
+    # ------------------------------------------------------------------
+
+    def _read_reg(self, reg: int, length: int) -> Optional[bytes]:
+        if self._ser is None:
+            return None
+        try:
+            self._ser.reset_input_buffer()
+            self._ser.write(bytes([_START, _READ, reg, length]))
+            header = self._ser.read(2)
+            if len(header) < 2 or header[0] != _RESP_OK:
+                return None
+            data = self._ser.read(header[1])
+            return data if len(data) == header[1] else None
+        except Exception:
+            return None
+
+    def _write_reg(self, reg: int, data: list[int]) -> bool:
+        if self._ser is None:
+            return False
+        try:
+            self._ser.write(bytes([_START, _WRITE, reg, len(data)] + data))
+            resp = self._ser.read(2)
+            return len(resp) == 2 and resp[0] == _RESP_OK
+        except Exception:
+            return False
+
+
+# ---------------------------------------------------------------------------
+# Test / main
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    import sys
+
+    port = sys.argv[1] if len(sys.argv) > 1 else "/dev/ttyS6"
+    print(f"BNO055 UART test on {port} @ 115200 baud")
+    print("Make sure PS0=HIGH, PS1=LOW on the BNO055 module for UART mode.\n")
+
+    imu = BNO055_IMU(uart_port=port, baudrate=115200)
+
+    if not imu.connect():
+        print("\nTroubleshooting:")
+        print(f"  1. Check port exists:  ls /dev/ttyS*")
+        print(f"  2. Try another port:   python IMUsensor.py /dev/ttyS2")
+        print(f"  3. Verify UART mode:   PS0=HIGH, PS1=LOW on BNO055")
+        print(f"  4. Check wiring:       BNO055 TX → OPi RX, BNO055 RX → OPi TX")
+        print(f"  5. Enable UART:        sudo orangepi-config → System → Hardware")
+        return
+
+    print("Connected. Reading IMU data (Ctrl+C to stop):\n")
+    try:
+        while True:
+            euler = imu.get_euler_angles()
+            accel = imu.get_accelerometer()
+            gyro  = imu.get_gyroscope()
+            cal   = imu.get_calibration_status()
+            temp  = imu.get_temperature()
+
+            if euler:
+                print(f"Euler    heading={euler[0]:7.2f}°  roll={euler[1]:7.2f}°  pitch={euler[2]:7.2f}°")
+            if accel:
+                print(f"Accel    x={accel[0]:6.2f}  y={accel[1]:6.2f}  z={accel[2]:6.2f}  m/s²")
+            if gyro:
+                print(f"Gyro     x={gyro[0]:6.2f}  y={gyro[1]:6.2f}  z={gyro[2]:6.2f}  dps")
+            if cal:
+                print(f"Calib    sys={cal['system']}/3  gyro={cal['gyro']}/3  accel={cal['accel']}/3  mag={cal['mag']}/3")
+            if temp is not None:
+                print(f"Temp     {temp}°C")
+            if not euler and not accel:
+                print("(no data — check wiring and port)")
+            print("-" * 60)
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    finally:
+        imu.disconnect()
+
+
+if __name__ == "__main__":
+    main()

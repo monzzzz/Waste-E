@@ -1,5 +1,4 @@
-import board
-import busio
+import serial
 import adafruit_bno055
 from typing import Optional, Dict, Any, Tuple
 import time
@@ -43,29 +42,102 @@ class BNO055_IMU:
         self.sensor = None
         self.uart = None
         
+    def _reset_uart_driver(self) -> bool:
+        """Unbind then rebind the kernel UART driver via sysfs.
+
+        When the Orange Pi's UART hardware gets stuck (DMA or interrupt state
+        left dirty by an abrupt process exit), no bytes are actually transmitted
+        even though Python thinks the port is open.  Unbind/bind forces the
+        kernel to reinitialise the UART controller completely — equivalent to a
+        power-cycle of the host-side hardware without touching the sensor.
+        """
+        import os
+        try:
+            port_name = os.path.basename(self.uart_port)          # e.g. ttyS6
+            dev_real  = os.path.realpath(f"/sys/class/tty/{port_name}/device")
+            dev_name  = os.path.basename(dev_real)                # e.g. feba0000.serial
+            drv_real  = os.path.realpath(f"/sys/class/tty/{port_name}/device/driver")
+            with open(f"{drv_real}/unbind", "w") as f:
+                f.write(dev_name)
+            time.sleep(0.3)
+            with open(f"{drv_real}/bind", "w") as f:
+                f.write(dev_name)
+            time.sleep(0.5)   # wait for device node to settle
+            return True
+        except Exception:
+            return False
+
     def connect(self) -> bool:
         """Initialize UART connection and sensor"""
-        try:
-            # Initialize UART
-            self.uart = busio.UART(board.TX, board.RX, baudrate=self.baudrate, timeout=1)
-            
-            # Initialize BNO055 sensor via UART
-            self.sensor = adafruit_bno055.BNO055_UART(self.uart)
-            
-            # Give sensor time to initialize
-            time.sleep(0.5)
-            
-            return True
-        except Exception as e:
-            print(f"Error connecting to BNO055 via UART: {e}")
-            return False
-    
+        self.disconnect()  # release any leftover handle
+
+        # Reset the Orange Pi UART hardware before every connect attempt.
+        # After an abrupt process exit the UART controller can be left with
+        # dirty DMA/interrupt state, causing TX to silently stop working even
+        # though the Python serial port opens without error.  Unbind/bind via
+        # sysfs reinitialises the controller, making it equivalent to what
+        # happens after a physical replug on the sensor side.
+        self._reset_uart_driver()
+
+        for attempt in range(3):
+            try:
+                self.uart = serial.Serial(
+                    self.uart_port,
+                    baudrate=self.baudrate,
+                    timeout=0.3,
+                    dsrdtr=False,
+                    rtscts=False,
+                )
+                # Drain stale bytes; BNO055 auto-discards partial commands after
+                # its 4.4 ms UART timeout so the sensor is already idle.
+                time.sleep(0.1)
+                self.uart.reset_input_buffer()
+
+                # Every BNO055 UART write returns a 2-byte ACK (0xEE 0x01 = OK).
+                # Read it before the next command to avoid BUS_OVER_RUN (0x06).
+                def wr(reg: int, val: int) -> bytes:
+                    self.uart.reset_input_buffer()
+                    self.uart.write(bytes([0xAA, 0x00, reg, 0x01, val]))
+                    return self.uart.read(2)
+
+                # RST_SYS (SYS_TRIGGER 0x3F bit5) is only accepted in CONFIG
+                # mode.  Retry the mode switch until we get a confirmed ACK.
+                for _ in range(5):
+                    if wr(0x3D, 0x00) == bytes([0xEE, 0x01]):  # OPR_MODE → CONFIG
+                        break
+                    time.sleep(0.05)
+                else:
+                    raise RuntimeError("BNO055 no ACK for CONFIG mode — UART still stuck")
+                time.sleep(0.025)   # 19 ms mode-switch settling
+
+                wr(0x3F, 0x20)      # SYS_TRIGGER → RST_SYS
+                time.sleep(1.0)     # ≥650 ms reboot; 1 s for margin
+                self.uart.reset_input_buffer()
+
+                self.uart.timeout = 1
+                self.sensor = adafruit_bno055.BNO055_UART(self.uart)
+                return True
+            except Exception as e:
+                print(f"IMU connect attempt {attempt+1}/3 failed: {e}")
+                self.disconnect()
+                self._reset_uart_driver()   # reset again before next attempt
+                time.sleep(1)
+        return False
+
     def disconnect(self):
-        """Close UART connection"""
+        """Close UART connection cleanly."""
+        self.sensor = None
         if self.uart:
-            self.uart.deinit()
+            try:
+                self.uart.reset_output_buffer()
+                self.uart.reset_input_buffer()
+            except Exception:
+                pass
+            try:
+                self.uart.close()
+            except Exception:
+                pass
             self.uart = None
-            self.sensor = None
     
     def get_calibration_status(self) -> Optional[Dict[str, int]]:
         """
