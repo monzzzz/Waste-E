@@ -1,7 +1,12 @@
-import smbus2
+from __future__ import annotations
+
+import math
 import time
 from typing import Optional, Tuple
-import math
+
+import smbus2
+
+from ego_state import EgoState
 
 
 class AS5048A_Encoder:
@@ -455,6 +460,147 @@ def main():
         print("3. Verify device: sudo i2cdetect -y 0")
         print("4. Check I2C address (default: 0x40)")
         print("5. Install smbus2: pip install smbus2")
+
+
+# ---------------------------------------------------------------------------
+# AS5600Encoder — adapted from self-driving-pipeline/encoder_ego.py
+# 12-bit magnetic rotary encoder (4096 counts/rev), I2C interface.
+# Reads raw angle via a single 2-byte block read on register 0x0C.
+# ---------------------------------------------------------------------------
+
+_AS5600_COUNTS_PER_TURN = 4096
+_AS5600_RAW_ANGLE_REGISTER = 0x0C
+
+
+class AS5600Encoder:
+    """
+    AS5600 12-bit magnetic encoder over I2C.
+
+    Args:
+        bus_id: I2C bus number.
+        address: I2C device address (default 0x36).
+    """
+
+    def __init__(self, bus_id: int = 1, address: int = 0x36) -> None:
+        self._bus_id = int(bus_id)
+        self._address = int(address)
+        self._bus: smbus2.SMBus | None = None
+
+    def open(self) -> None:
+        if self._bus is None:
+            self._bus = smbus2.SMBus(self._bus_id)
+
+    def close(self) -> None:
+        if self._bus is not None:
+            self._bus.close()
+            self._bus = None
+
+    def read_raw_angle(self) -> int:
+        if self._bus is None:
+            raise RuntimeError("AS5600 bus is not open — call open() first")
+        high, low = self._bus.read_i2c_block_data(self._address, _AS5600_RAW_ANGLE_REGISTER, 2)
+        return ((high << 8) | low) & 0x0FFF
+
+    def read_angle_deg(self) -> float:
+        return self.read_raw_angle() * 360.0 / _AS5600_COUNTS_PER_TURN
+
+
+# ---------------------------------------------------------------------------
+# WheelOdometry — adapted from self-driving-pipeline/encoder_ego.py
+# Differential drive odometry from a single measured wheel (encoder) and an
+# assumed paired-wheel speed ratio.  Produces an EgoState.
+# ---------------------------------------------------------------------------
+
+class WheelOdometry:
+    """
+    Differential drive odometry using one encoder wheel.
+
+    Args:
+        measured_wheel: "left" or "right" — which wheel has the encoder.
+        wheel_radius_m: Wheel radius in metres.
+        axle_track_m: Distance between wheel contact patches in metres.
+        paired_wheel_speed_scale: Speed of the un-measured wheel relative to
+            the measured wheel (use 1.0 if both wheels move at the same speed).
+        speed_deadband_mps: Velocities below this are treated as zero.
+    """
+
+    def __init__(
+        self,
+        measured_wheel: str = "left",
+        wheel_radius_m: float = 0.05,
+        axle_track_m: float = 0.3,
+        paired_wheel_speed_scale: float = 1.0,
+        speed_deadband_mps: float = 0.01,
+    ) -> None:
+        measured_wheel = measured_wheel.strip().lower()
+        if measured_wheel not in {"left", "right"}:
+            raise ValueError(f"measured_wheel must be 'left' or 'right', got {measured_wheel!r}")
+        self._measured_wheel = measured_wheel
+        self._wheel_radius_m = wheel_radius_m
+        self._axle_track_m = axle_track_m
+        self._paired_scale = paired_wheel_speed_scale
+        self._deadband = speed_deadband_mps
+        self._x_m = 0.0
+        self._y_m = 0.0
+        self._yaw_rad = 0.0
+        self._distance_m = 0.0
+        self._last_ts: float | None = None
+
+    def update(
+        self,
+        *,
+        timestamp_s: float,
+        angular_velocity_rad_s: float,
+        action: str,
+    ) -> EgoState:
+        linear_mps = angular_velocity_rad_s * self._wheel_radius_m
+        left_mps, right_mps = self._wheel_velocities(linear_mps, action)
+
+        if self._last_ts is None:
+            self._last_ts = timestamp_s
+            return self._ego(timestamp_s, 0.0, 0.0)
+
+        dt = max(timestamp_s - self._last_ts, 0.0)
+        self._last_ts = timestamp_s
+        v = (left_mps + right_mps) / 2.0
+        omega = (right_mps - left_mps) / self._axle_track_m
+        yaw_mid = self._yaw_rad + 0.5 * omega * dt
+        self._x_m += v * math.cos(yaw_mid) * dt
+        self._y_m += v * math.sin(yaw_mid) * dt
+        self._yaw_rad = math.atan2(math.sin(self._yaw_rad + omega * dt),
+                                   math.cos(self._yaw_rad + omega * dt))
+        self._distance_m += abs(v) * dt
+        return self._ego(timestamp_s, v, omega)
+
+    def _ego(self, ts: float, speed: float, omega: float) -> EgoState:
+        return EgoState(
+            timestamp_s=ts,
+            x_m=self._x_m,
+            y_m=self._y_m,
+            yaw_rad=self._yaw_rad,
+            speed_mps=speed,
+            distance_traveled_m=self._distance_m,
+            angular_velocity_rad_s=omega,
+            source="encoder_odo",
+        )
+
+    def _wheel_velocities(self, measured_mps: float, action: str) -> tuple[float, float]:
+        if abs(measured_mps) < self._deadband:
+            measured_mps = 0.0
+        mag = abs(measured_mps)
+        paired = mag * self._paired_scale
+        if self._measured_wheel == "left":
+            if action == "forward":   return mag, paired
+            if action == "backward":  return -mag, -paired
+            if action == "left":      return -mag, paired
+            if action == "right":     return mag, -paired
+            return measured_mps, measured_mps * self._paired_scale
+        else:
+            if action == "forward":   return paired, mag
+            if action == "backward":  return -paired, -mag
+            if action == "left":      return -paired, mag
+            if action == "right":     return paired, -mag
+            return measured_mps * self._paired_scale, measured_mps
 
 
 if __name__ == "__main__":

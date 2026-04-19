@@ -2,6 +2,8 @@ import socket
 import json
 import threading
 import time
+import urllib.request
+import urllib.error
 from typing import Optional, Dict, Any, Callable
 from GPS import NEO8M_GPS
 from IMUsensor import BNO055_IMU
@@ -13,21 +15,34 @@ class HardwareServer:
     Hardware data server for Orange Pi
     Collects data from GPS, IMU, and motor controllers
     Sends data to remote server via TCP/UDP
+
+    When dashboard.py is running on the same device, set dashboard_url so
+    this server fetches sensor state from the dashboard API instead of
+    opening the serial ports directly.  Both programs sharing the same serial
+    port splits the NMEA byte-stream, causing the dashboard to miss sentences
+    and never update the map.
+
+    Example:
+        server = HardwareServer(..., dashboard_url="http://localhost:8888")
     """
-    
-    def __init__(self, server_host: str, server_port: int, 
-                 protocol: str = 'tcp', update_rate: float = 1.0):
+
+    def __init__(self, server_host: str, server_port: int,
+                 protocol: str = 'tcp', update_rate: float = 1.0,
+                 dashboard_url: Optional[str] = None):
         """
-        Initialize hardware server
-        
         Args:
             server_host: Remote server IP address
             server_port: Remote server port
             protocol: 'tcp' or 'udp'
-            update_rate: Data update rate in Hz (updates per second)
+            update_rate: Data update rate in Hz
+            dashboard_url: Base URL of a running dashboard.py instance
+                           (e.g. "http://localhost:8888").  When set, GPS and
+                           IMU data are fetched from /api/state instead of
+                           opening the serial ports directly.
         """
         self.server_host = server_host
         self.server_port = server_port
+        self.dashboard_url = dashboard_url.rstrip("/") if dashboard_url else None
         self.protocol = protocol.lower()
         self.update_rate = update_rate
         self.socket = None
@@ -185,7 +200,7 @@ class HardwareServer:
         
         # Initialize IMU
         try:
-            self.imu = BNO055_IMU(i2c_bus=imu_bus)
+            self.imu = BNO055_IMU()
             if self.imu.connect():
                 print("IMU initialized")
         except Exception as e:
@@ -212,48 +227,83 @@ class HardwareServer:
             except Exception as e:
                 print(f"Motor initialization failed: {e}")
     
+    def _fetch_dashboard_state(self) -> Optional[Dict[str, Any]]:
+        """Fetch current sensor state from a running dashboard.py instance."""
+        try:
+            url = f"{self.dashboard_url}/api/state"
+            with urllib.request.urlopen(url, timeout=2) as resp:
+                return json.loads(resp.read().decode())
+        except Exception as e:
+            print(f"Dashboard fetch error: {e}")
+            return None
+
     def collect_sensor_data(self) -> Dict[str, Any]:
         """
-        Collect data from all sensors
-        
-        Returns:
-            Dictionary containing all sensor data
+        Collect data from all sensors.
+
+        When dashboard_url is configured, GPS and IMU are read from the
+        dashboard API so this process does not compete for the serial ports.
+        Motor data is always read locally (motors are not exposed by the
+        dashboard).
         """
         data = {
             'timestamp': time.time(),
             'gps': None,
             'imu': None,
-            'motor': None
+            'motor': None,
         }
-        
-        # Get GPS data
-        if self.gps:
-            try:
-                gps_data = self.gps.get_gps_data()
-                if gps_data:
-                    data['gps'] = gps_data
-            except Exception as e:
-                print(f"GPS read error: {e}")
-        
-        # Get IMU data
-        if self.imu:
-            try:
-                imu_data = self.imu.get_all_data()
-                if imu_data:
-                    data['imu'] = imu_data
-            except Exception as e:
-                print(f"IMU read error: {e}")
-        
-        # Get motor status
+
+        if self.dashboard_url:
+            # Pull GPS + IMU from the dashboard instead of the serial ports.
+            state = self._fetch_dashboard_state()
+            if state:
+                g = state.get('gps', {})
+                if g.get('lat') is not None and g.get('lon') is not None:
+                    data['gps'] = {
+                        'latitude':   g.get('lat'),
+                        'longitude':  g.get('lon'),
+                        'altitude':   g.get('alt'),
+                        'speed':      g.get('speed'),
+                        'heading':    g.get('heading'),
+                        'satellites': g.get('satellites'),
+                        'fix_quality': 1 if g.get('fix') else 0,
+                    }
+                im = state.get('imu', {})
+                if im:
+                    data['imu'] = {
+                        'heading': im.get('heading'),
+                        'roll':    im.get('roll'),
+                        'pitch':   im.get('pitch'),
+                        'temp':    im.get('temp'),
+                    }
+        else:
+            # Direct serial-port access (only safe when dashboard.py is NOT running).
+            if self.gps:
+                try:
+                    gps_data = self.gps.get_gps_data()
+                    if gps_data:
+                        data['gps'] = gps_data
+                except Exception as e:
+                    print(f"GPS read error: {e}")
+
+            if self.imu:
+                try:
+                    imu_data = self.imu.get_all_data()
+                    if imu_data:
+                        data['imu'] = imu_data
+                except Exception as e:
+                    print(f"IMU read error: {e}")
+
+        # Motor status is always read locally.
         if self.motors:
             try:
                 data['motor'] = {
-                    'left_speed': self.motors.left_motor.get_speed(),
-                    'right_speed': self.motors.right_motor.get_speed()
+                    'left_speed':  self.motors.left_motor.get_speed(),
+                    'right_speed': self.motors.right_motor.get_speed(),
                 }
             except Exception as e:
                 print(f"Motor read error: {e}")
-        
+
         return data
     
     def start_streaming(self):
@@ -357,19 +407,25 @@ def main():
     SERVER_HOST = '192.168.1.100'  # Change to your server IP
     SERVER_PORT = 5000
     
+    # Set dashboard_url if dashboard.py is running on the same device.
+    # This prevents both programs from opening the same GPS/IMU serial ports,
+    # which would split the byte-stream and break GPS on the dashboard map.
+    DASHBOARD_URL = 'http://localhost:8888'   # set to None to use serial directly
+
     # Create server instance
     server = HardwareServer(
         server_host=SERVER_HOST,
         server_port=SERVER_PORT,
         protocol='tcp',
-        update_rate=10.0  # 10 Hz
+        update_rate=10.0,
+        dashboard_url=DASHBOARD_URL,
     )
-    
+
     try:
         # Initialize hardware
         print("Initializing hardware...")
         server.initialize_hardware(
-            gps_port='/dev/ttyS1',
+            gps_port='/dev/ttyS0',
             imu_bus=0,
             motor_pins={
                 'left': {'enable': 32, 'in1': 29, 'in2': 31},
