@@ -180,6 +180,25 @@ def init_train_state(
 
 
 @at.typecheck
+def eval_step(
+    rng: at.KeyArrayLike,
+    state: training_utils.TrainState,
+    batch: tuple[_model.Observation, _model.Actions],
+) -> dict[str, at.Array]:
+    """Evaluate model on validation batch without updating parameters."""
+    # Use EMA params if available, otherwise use regular params
+    params = state.ema_params if state.ema_params is not None else state.params
+    model = nnx.merge(state.model_def, params)
+    model.eval()
+
+    observation, actions = batch
+    chunked_loss = model.compute_loss(rng, observation, actions, train=False)
+    loss = jnp.mean(chunked_loss)
+
+    return {"val/loss": loss}
+
+
+@at.typecheck
 def train_step(
     config: _config.TrainConfig,
     rng: at.KeyArrayLike,
@@ -272,6 +291,19 @@ def main(config: _config.TrainConfig):
     batch = next(data_iter)
     logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
 
+    # Initialize validation data loader if configured
+    val_data_loader = None
+    val_data_iter = None
+    if config.val_data is not None:
+        val_config = dataclasses.replace(config, data=config.val_data)
+        val_data_loader = _data_loader.create_data_loader(
+            val_config,
+            sharding=data_sharding,
+            shuffle=False,  # Don't shuffle validation data
+        )
+        val_data_iter = iter(val_data_loader)
+        logging.info("Initialized validation data loader")
+
     # Log images from first batch to sanity check.
     images_to_log = [
         wandb.Image(np.concatenate([np.array(img[i]) for img in batch[0].images.values()], axis=1))
@@ -293,6 +325,15 @@ def main(config: _config.TrainConfig):
         donate_argnums=(1,),
     )
 
+    # Compile validation step if validation data is configured
+    peval_step = None
+    if val_data_loader is not None:
+        peval_step = jax.jit(
+            eval_step,
+            in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
+            out_shardings=replicated_sharding,
+        )
+
     start_step = int(train_state.step)
     pbar = tqdm.tqdm(
         range(start_step, config.num_train_steps),
@@ -313,6 +354,32 @@ def main(config: _config.TrainConfig):
             pbar.write(f"Step {step}: {info_str}")
             wandb.log(reduced_info, step=step)
             infos = []
+
+        # Run validation evaluation
+        if (peval_step is not None and 
+            hasattr(config, 'eval_interval') and 
+            step % config.eval_interval == 0 and 
+            step > 0):
+            val_infos = []
+            num_val_batches = getattr(config, 'num_val_batches', 10)
+            for _ in range(num_val_batches):
+                try:
+                    val_batch = next(val_data_iter)
+                except StopIteration:
+                    # Reset iterator if we run out of validation data
+                    val_data_iter = iter(val_data_loader)
+                    val_batch = next(val_data_iter)
+                
+                with sharding.set_mesh(mesh):
+                    val_info = peval_step(train_rng, train_state, val_batch)
+                val_infos.append(val_info)
+            
+            stacked_val_infos = common_utils.stack_forest(val_infos)
+            reduced_val_info = jax.device_get(jax.tree.map(jnp.mean, stacked_val_infos))
+            val_info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_val_info.items())
+            pbar.write(f"Step {step} [VALIDATION]: {val_info_str}")
+            wandb.log(reduced_val_info, step=step)
+
         batch = next(data_iter)
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
