@@ -1,2 +1,3 @@
 flask
+opencv-python-headless
 opencv-python
