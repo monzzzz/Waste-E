@@ -11,6 +11,7 @@ carla/__pycache__/
 # ai
 
 ai/self-driving/uni-ad/.env
+ai/path-planning/.env
 ai/path-planning/data/
 ai/path-planning/__pycache__/
 ai/path-planning/nvidia-alpamayo-map/
