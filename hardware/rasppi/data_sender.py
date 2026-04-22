@@ -17,14 +17,14 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import Optional
 
 CAM_PORT = int(os.getenv("CAM_PORT", "5000"))
 SEND_HZ = 2.0
 RETRY_SECONDS = 5.0
+MAX_CAMERAS = 3
 
 
-def discover_camera_names(max_cameras: int = 3) -> list[str]:
+def discover_camera_names(max_cameras: int = MAX_CAMERAS) -> list[str]:
     devices = sorted(
         (Path(p) for p in glob.glob("/dev/video*")),
         key=lambda p: int(p.name.replace("video", "")) if p.name.startswith("video") else 9999,
@@ -32,16 +32,19 @@ def discover_camera_names(max_cameras: int = 3) -> list[str]:
     return [p.name for p in devices[:max_cameras] if p.exists()]
 
 
-def start_camera_server(script_path: Path) -> subprocess.Popen:
+def start_camera_server(script_path: Path, cam_port: int) -> subprocess.Popen:
     if not script_path.exists():
         raise FileNotFoundError(f"Camera stream script not found: {script_path}")
+
+    env = os.environ.copy()
+    env["CAM_PORT"] = str(cam_port)
 
     return subprocess.Popen(
         [sys.executable, str(script_path)],
         cwd=str(script_path.parent),
         stdout=None,
         stderr=None,
-        env=os.environ.copy(),
+        env=env,
     )
 
 
@@ -57,15 +60,44 @@ def post_json(url: str, payload: dict) -> None:
         resp.read()
 
 
-def register_and_send_loop(server_url: str, my_ip: str, cam_port: int, camera_names: list[str]) -> None:
-    registration = {
-        "device": "rasppi",
-        "ip": my_ip,
-        "cam_port": cam_port,
-        "cameras": camera_names,
-    }
+def _fetch_local_camera_names(cam_port: int, max_cameras: int = MAX_CAMERAS) -> list[str]:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{cam_port}/api/cameras", timeout=2) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+        names: list[str] = []
+        if isinstance(payload, list):
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                if not bool(item.get("open", True)):
+                    continue
+                device = item.get("device")
+                if not device:
+                    continue
+                names.append(Path(str(device)).name)
+        if names:
+            return names[:max_cameras]
+    except Exception:
+        pass
+    return discover_camera_names(max_cameras=max_cameras)
+
+
+def register_and_send_loop(
+    server_url: str,
+    my_ip: str,
+    cam_port: int,
+    max_cameras: int = MAX_CAMERAS,
+) -> None:
+    camera_names = _fetch_local_camera_names(cam_port, max_cameras=max_cameras)
 
     while True:
+        camera_names = _fetch_local_camera_names(cam_port, max_cameras=max_cameras)
+        registration = {
+            "device": "rasppi",
+            "ip": my_ip,
+            "cam_port": cam_port,
+            "cameras": camera_names,
+        }
         try:
             post_json(f"{server_url.rstrip('/')}/api/register", registration)
             print(f"[RasPi sender] Registered with dashboard server: {registration}")
@@ -76,12 +108,16 @@ def register_and_send_loop(server_url: str, my_ip: str, cam_port: int, camera_na
 
         while True:
             try:
+                camera_names = _fetch_local_camera_names(cam_port, max_cameras=max_cameras)
                 payload = {
                     "device": "rasppi",
                     "ts": time.time(),
+                    "cam_port": cam_port,
+                    "cameras": camera_names,
                     "sensors": {
                         "camera_count": len(camera_names),
                         "camera_names": camera_names,
+                        "camera_port": cam_port,
                     },
                 }
                 post_json(f"{server_url.rstrip('/')}/api/data", payload)
@@ -101,22 +137,27 @@ if __name__ == "__main__":
                         help=f"This device's local camera server port (default {CAM_PORT})")
     parser.add_argument("--camera-script", default="camera_stream.py",
                         help="Path to the local camera stream script")
+    parser.add_argument("--max-cameras", type=int, default=MAX_CAMERAS,
+                        help=f"Maximum number of camera feeds to register (default {MAX_CAMERAS})")
     args = parser.parse_args()
 
     script_path = Path(__file__).parent / args.camera_script
-    camera_names = discover_camera_names()
+    camera_names = discover_camera_names(max_cameras=args.max_cameras)
 
     if not camera_names:
         print("WARNING: no /dev/video* devices found. The camera server may still start.")
 
     print(f"[RasPi] Starting camera server from {script_path}")
-    camera_proc = start_camera_server(script_path)
+    camera_proc = start_camera_server(script_path, args.cam_port)
     print(f"[RasPi] Camera server should be available on port {args.cam_port}")
+    time.sleep(1.5)
+    camera_names = _fetch_local_camera_names(args.cam_port, max_cameras=args.max_cameras)
+    print(f"[RasPi] Registered camera list: {camera_names}")
 
     try:
         thread = threading.Thread(
             target=register_and_send_loop,
-            args=(args.server, args.my_ip, args.cam_port, camera_names),
+            args=(args.server, args.my_ip, args.cam_port, args.max_cameras),
             daemon=True,
         )
         thread.start()
@@ -127,3 +168,4 @@ if __name__ == "__main__":
         if camera_proc and camera_proc.poll() is None:
             camera_proc.terminate()
             camera_proc.wait(timeout=5)
+

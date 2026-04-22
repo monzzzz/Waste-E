@@ -1,4 +1,4 @@
-from flask import Flask, Response, render_template_string
+from flask import Flask, Response, jsonify, render_template_string
 import cv2
 import sys
 import os
@@ -6,6 +6,7 @@ import time
 import threading
 
 app = Flask(__name__)
+CAM_PORT = int(os.getenv("CAM_PORT", "5000"))
 
 def open_camera(device):
     for backend in (cv2.CAP_V4L2, cv2.CAP_ANY):
@@ -76,28 +77,46 @@ else:
     print(f'Using cameras: {[c["device"] for c in cameras]}')
 
 
+def _reopen_camera(camera):
+    old_cap = camera['cap']
+    try:
+        old_cap.release()
+    except Exception:
+        pass
+    cap = open_camera(camera['device'])
+    camera['cap'] = cap
+    camera['open'] = cap.isOpened()
+    return cap
+
+
 def generate_frames(camera_id):
     camera = cameras[camera_id]
     device = camera['device']
     cap = camera['cap']
     frame_count = 0
+    read_failures = 0
     while True:
         if not cap.isOpened():
             print(f'camera {camera_id} ({device}) reconnecting...')
-            cap.release()
-            cap = open_camera(device)
-            camera['cap'] = cap
-            camera['open'] = cap.isOpened()
+            cap = _reopen_camera(camera)
             if not cap.isOpened():
                 time.sleep(2)
                 continue
 
         success, frame = cap.read()
         if not success or frame is None:
+            read_failures += 1
             print(f'camera {camera_id} ({device}) read failed, retrying...')
+            # Some V4L2 devices stay "opened" but stop delivering frames.
+            # Force a reopen after repeated read failures.
+            if read_failures >= 8:
+                print(f'camera {camera_id} ({device}) forcing reopen after repeated read failures')
+                cap = _reopen_camera(camera)
+                read_failures = 0
             time.sleep(0.5)
             continue
 
+        read_failures = 0
         ret, buffer = cv2.imencode('.jpg', frame)
         if not ret:
             continue
@@ -155,5 +174,17 @@ def video_feed(camera_id):
     return Response(generate_frames(camera_id), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 
+@app.route('/api/cameras')
+def api_cameras():
+    return jsonify([
+        {
+            'id': cam['id'],
+            'device': cam['device'],
+            'open': bool(cam['cap'] and cam['cap'].isOpened()),
+        }
+        for cam in cameras
+    ])
+
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=CAM_PORT, debug=False)
