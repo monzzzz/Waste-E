@@ -67,6 +67,12 @@ CAM_W, CAM_H, CAM_FPS, CAM_Q = 1280, 720, 10, 2
 SEND_HZ = 5.0
 DRIVE_ACTIONS = {"forward", "backward", "left", "right", "stop"}
 
+MEDIAMTX_BIN = os.getenv("MEDIAMTX_BIN", str(Path(__file__).parent / "mediamtx"))
+MEDIAMTX_RTSP_PORT = int(os.getenv("MEDIAMTX_RTSP_PORT", "8554"))
+MEDIAMTX_WEBRTC_PORT = int(os.getenv("MEDIAMTX_WEBRTC_PORT", "8889"))
+H264_ENCODER = os.getenv("H264_ENCODER", "libx264")
+_WEBRTC_MODE = os.path.isfile(MEDIAMTX_BIN) and os.access(MEDIAMTX_BIN, os.X_OK)
+
 DASHBOARD_URL: Optional[str] = None
 DASHBOARD_DRIVE_URL: Optional[str] = None
 DRIVE_PORT: int = CAM_PORT
@@ -101,25 +107,40 @@ _CAM_PROCS: dict[str, subprocess.Popen] = {}
 _CAM_LOCK = threading.Lock()
 
 
+def _start_mediamtx() -> Optional[subprocess.Popen]:
+    if not _WEBRTC_MODE:
+        return None
+    cfg = Path(MEDIAMTX_BIN).parent / "mediamtx.yml"
+    cmd = [MEDIAMTX_BIN] + ([str(cfg)] if cfg.exists() else [])
+    print(f"[MediaMTX] starting ({MEDIAMTX_BIN})")
+    return subprocess.Popen(cmd, cwd=str(Path(MEDIAMTX_BIN).parent),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def _start_ffmpeg(dev: str) -> subprocess.Popen:
+    cam_name = os.path.basename(dev)
     cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-f",
-        "v4l2",
-        "-input_format",
-        "mjpeg",
-        "-framerate",
-        str(CAM_FPS),
-        "-video_size",
-        f"{CAM_W}x{CAM_H}",
-        "-i",
-        dev,
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-f", "v4l2", "-input_format", "mjpeg",
+        "-framerate", str(CAM_FPS),
+        "-video_size", f"{CAM_W}x{CAM_H}",
+        "-i", dev,
     ]
     if dev in ROTATE_180:
         cmd += ["-vf", "hflip,vflip"]
+
+    if _WEBRTC_MODE:
+        if H264_ENCODER == "libx264":
+            cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency"]
+        else:
+            cmd += ["-c:v", H264_ENCODER]
+        cmd += [
+            "-b:v", "1500k", "-g", str(CAM_FPS * 2),
+            "-f", "rtsp", "-rtsp_transport", "tcp",
+            f"rtsp://127.0.0.1:{MEDIAMTX_RTSP_PORT}/{cam_name}",
+        ]
+        return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, bufsize=0)
+
     cmd += ["-f", "mjpeg", "-q:v", str(CAM_Q), "pipe:1"]
     return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
 
@@ -509,6 +530,7 @@ def _register_and_send_loop(server_url: str, my_ip: str, drive_port: int):
         "cameras": cam_names,
         "drive_port": drive_port,
         "dashboard_port": drive_port,
+        "webrtc_port": MEDIAMTX_WEBRTC_PORT if _WEBRTC_MODE else None,
     }
     poster = _PersistentPoster(server_url)
 
@@ -547,6 +569,8 @@ app = Flask(__name__)
 
 @app.route("/cam/<name>")
 def cam_stream(name):
+    if _WEBRTC_MODE:
+        abort(404)  # streams now served by MediaMTX via WebRTC
     dev = f"/dev/{name}"
     if dev not in CAM_DEVS or not os.path.exists(dev):
         abort(404)
@@ -628,6 +652,13 @@ if __name__ == "__main__":
     else:
         DRIVE_PORT = CAM_PORT
         DASHBOARD_DRIVE_URL = None
+
+    mediamtx_proc = _start_mediamtx()
+    if mediamtx_proc:
+        time.sleep(1.5)  # let MediaMTX bind its ports before ffmpeg connects
+        print(f"[OrangePi] WebRTC mode — MediaMTX RTSP:{MEDIAMTX_RTSP_PORT} WebRTC:{MEDIAMTX_WEBRTC_PORT}")
+    else:
+        print("[OrangePi] MJPEG mode — MediaMTX binary not found, falling back to pipe streaming")
 
     print(f"[OrangePi] Cameras found: {CAM_DEVS or 'none'}")
     print(f"[OrangePi] Camera server → http://0.0.0.0:{CAM_PORT}")

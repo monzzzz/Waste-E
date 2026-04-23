@@ -71,6 +71,16 @@ def _make_camera_url(device_info: dict[str, Any], camera_name: str, index: int) 
     return f"http://{ip}:{port}/video_feed/{index}"
 
 
+def _make_webrtc_url(device_info: dict[str, Any], camera_name: str) -> str:
+    if device_info.get("device") != "orangepi":
+        return ""
+    ip = device_info.get("ip")
+    webrtc_port = device_info.get("webrtc_port")
+    if not ip or not webrtc_port:
+        return ""
+    return f"http://{ip}:{webrtc_port}/{camera_name}/whep"
+
+
 def _make_drive_url(device_info: dict[str, Any]) -> str:
     urls = _make_drive_urls(device_info)
     return urls[0] if urls else ""
@@ -154,6 +164,7 @@ def _collect_cameras(devices: dict[str, dict[str, Any]]) -> list[dict[str, Any]]
                     "name": name,
                     "index": index,
                     "url": _make_camera_url(info, name, index),
+                    "webrtc_url": _make_webrtc_url(info, name),
                 }
             )
 
@@ -274,6 +285,9 @@ def api_register() -> Response:
             "drive_port": payload.get("drive_port")
             if payload.get("drive_port") is not None
             else previous.get("drive_port"),
+            "webrtc_port": payload.get("webrtc_port")
+            if payload.get("webrtc_port") is not None
+            else previous.get("webrtc_port"),
             "cameras": _coerce_camera_list(payload.get("cameras"), device=device)
             if payload.get("cameras") is not None
             else _coerce_camera_list(previous.get("cameras"), device=device),
@@ -325,6 +339,8 @@ def api_data() -> Response:
             info["dashboard_port"] = payload.get("dashboard_port")
         if payload.get("drive_port") is not None:
             info["drive_port"] = payload.get("drive_port")
+        if payload.get("webrtc_port") is not None:
+            info["webrtc_port"] = payload.get("webrtc_port")
         if payload.get("cameras") is not None:
             info["cameras"] = _coerce_camera_list(payload.get("cameras"), device=device)
 
@@ -782,7 +798,7 @@ html,body{
   overflow:hidden;
   background:#03060d;
 }
-.cam-card img{width:100%;height:100%;object-fit:cover;display:block}
+.cam-card img,.cam-card video{width:100%;height:100%;object-fit:cover;display:block;background:#03060d}
 .cam-overlay{
   position:absolute;
   top:0;left:0;right:0;
@@ -1084,6 +1100,46 @@ let mapReady = false;
 let cameraSignature = '';
 let currentAction = 'stop';
 let sendingDrive = false;
+const _peerConns = {};
+
+async function _startWhep(camId, whepUrl) {
+  if (_peerConns[camId]) { try { _peerConns[camId].close(); } catch(_){} }
+  const pc = new RTCPeerConnection({ iceServers: [] });
+  _peerConns[camId] = pc;
+  pc.addTransceiver('video', { direction: 'recvonly' });
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  await new Promise(resolve => {
+    if (pc.iceGatheringState === 'complete') { resolve(); return; }
+    const h = () => { if (pc.iceGatheringState === 'complete') { pc.removeEventListener('icegatheringstatechange', h); resolve(); } };
+    pc.addEventListener('icegatheringstatechange', h);
+    setTimeout(resolve, 3000);
+  });
+  try {
+    const r = await fetch(whepUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/sdp' },
+      body: pc.localDescription.sdp,
+    });
+    if (!r.ok) throw new Error('WHEP ' + r.status);
+    await pc.setRemoteDescription({ type: 'answer', sdp: await r.text() });
+  } catch(err) {
+    const card = document.querySelector('[data-camid="' + camId + '"]');
+    if (card) card.classList.add('down');
+    return;
+  }
+  pc.ontrack = (e) => {
+    const vid = document.getElementById('vid-' + camId);
+    if (vid) vid.srcObject = e.streams[0] || new MediaStream([e.track]);
+  };
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+      const card = document.querySelector('[data-camid="' + camId + '"]');
+      if (card) card.classList.add('down');
+      setTimeout(() => _startWhep(camId, whepUrl), 3000);
+    }
+  };
+}
 
 const robotIconHtml = `<div style="
   width:34px;height:34px;border-radius:50%;
@@ -1335,7 +1391,7 @@ function drawBirdEye(heading, roll, pitch){
 
 function renderCameras(cameras){
   const bounded = [...(cameras || [])].slice(0, CAMERA_TARGET);
-  const signature = bounded.map(c => `${c.id}|${c.url}|${c.name}`).join(';');
+  const signature = bounded.map(c => `${c.id}|${c.url}|${c.webrtc_url}|${c.name}`).join(';');
   if (signature === cameraSignature) return;
   cameraSignature = signature;
 
@@ -1346,22 +1402,39 @@ function renderCameras(cameras){
     const title = cam && cam.title ? cam.title : 'Unknown';
     const name = cam && cam.name ? cam.name : '-';
     const url = cam && cam.url ? cam.url : '';
+    const webrtcUrl = cam && cam.webrtc_url ? cam.webrtc_url : '';
+    const useWebRTC = !!webrtcUrl;
     const slotText = cam && cam.device === 'rasppi'
       ? `Raspberry Pi · slot ${cam.index + 1}`
       : `OrangePi · slot ${cam.index + 1}`;
+    const proto = useWebRTC ? 'WebRTC' : 'MJPEG';
 
-    cards.push(`
-      <div class="cam-card" data-camid="${cam.id}">
-        <img src="${url}" alt="${name}" loading="lazy"
-             onerror="this.parentElement.classList.add('down');" />
-        <div class="cam-overlay">
-          <span class="name">${name}</span>
-          <span class="device">${title}</span>
+    if (useWebRTC) {
+      cards.push(`
+        <div class="cam-card" data-camid="${cam.id}" data-whep="${webrtcUrl}">
+          <video id="vid-${cam.id}" autoplay muted playsinline></video>
+          <div class="cam-overlay">
+            <span class="name">${name}</span>
+            <span class="device">${title}</span>
+          </div>
+          <div class="cam-footer">${slotText} · ${proto}</div>
+          <div class="cam-down">Stream unavailable</div>
         </div>
-        <div class="cam-footer">${slotText} · MJPEG</div>
-        <div class="cam-down">Stream unavailable</div>
-      </div>
-    `);
+      `);
+    } else {
+      cards.push(`
+        <div class="cam-card" data-camid="${cam.id}">
+          <img src="${url}" alt="${name}" loading="lazy"
+               onerror="this.parentElement.classList.add('down');" />
+          <div class="cam-overlay">
+            <span class="name">${name}</span>
+            <span class="device">${title}</span>
+          </div>
+          <div class="cam-footer">${slotText} · ${proto}</div>
+          <div class="cam-down">Stream unavailable</div>
+        </div>
+      `);
+    }
   });
 
   for (let i = bounded.length; i < CAMERA_TARGET; i++){
@@ -1375,6 +1448,12 @@ function renderCameras(cameras){
   }
 
   grid.innerHTML = cards.join('');
+
+  bounded.forEach((cam) => {
+    if (cam && cam.webrtc_url) {
+      _startWhep(cam.id, cam.webrtc_url);
+    }
+  });
 }
 
 async function sendDrive(action){
