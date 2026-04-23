@@ -64,7 +64,7 @@ IMU_PORT = os.getenv("IMU_PORT", "/dev/ttyS6")
 CAM_PORT = int(os.getenv("CAM_PORT", "8890"))
 ROTATE_180 = {"/dev/video0", "/dev/video2", "/dev/video6"}
 CAM_W, CAM_H, CAM_FPS, CAM_Q = 1280, 720, 10, 2
-SEND_HZ = 10.0
+SEND_HZ = 5.0
 DRIVE_ACTIONS = {"forward", "backward", "left", "right", "stop"}
 
 DASHBOARD_URL: Optional[str] = None
@@ -136,7 +136,7 @@ def _mjpeg_gen(dev: str):
     p = _get_proc(dev)
     buf = b""
     while True:
-        chunk = p.stdout.read(4096)
+        chunk = p.stdout.read(65536)
         if not chunk:
             break
         buf += chunk
