@@ -16,7 +16,9 @@ competing for serial ports and to proxy drive commands to dashboard.py:
 from __future__ import annotations
 
 import argparse
+import copy
 import glob
+import http.client
 import json
 import os
 import re
@@ -209,6 +211,40 @@ def _extract_port(url: Optional[str], fallback: int) -> int:
     return fallback
 
 
+class _PersistentPoster:
+    """Reuses a single TCP connection for repeated POSTs to the same host."""
+
+    def __init__(self, server_url: str, timeout: float = 5.0):
+        parsed = urllib.parse.urlsplit(server_url)
+        self._host = parsed.netloc
+        self._https = parsed.scheme == "https"
+        self._timeout = timeout
+        self._conn: http.client.HTTPConnection | None = None
+
+    def _connect(self) -> http.client.HTTPConnection:
+        if self._https:
+            return http.client.HTTPSConnection(self._host, timeout=self._timeout)
+        return http.client.HTTPConnection(self._host, timeout=self._timeout)
+
+    def post(self, path: str, payload: dict) -> None:
+        data = json.dumps(payload, separators=(",", ":")).encode()
+        for attempt in range(2):
+            try:
+                if self._conn is None:
+                    self._conn = self._connect()
+                self._conn.request(
+                    "POST", path, body=data,
+                    headers={"Content-Type": "application/json", "Connection": "keep-alive"},
+                )
+                self._conn.getresponse().read()
+                return
+            except Exception:
+                self._conn = None
+                if attempt == 0:
+                    continue
+                raise
+
+
 def _read_json_from_url(url: str, timeout: float = 2.5) -> dict:
     with urllib.request.urlopen(url, timeout=timeout) as resp:
         raw = resp.read().decode("utf-8", errors="replace")
@@ -244,7 +280,7 @@ def _sensor_loop(dashboard_url: Optional[str]):
 
     while True:
         with _state_lock:
-            state = json.loads(json.dumps(_sensor_state))
+            state = copy.deepcopy(_sensor_state)
 
         if dashboard_url:
             try:
@@ -376,7 +412,7 @@ def _motor_manager():
 
 
 def _register_and_send_loop(server_url: str, my_ip: str, drive_port: int):
-    cam_names = [os.path.basename(d) for d in CAM_DEVS if os.path.exists(d)]
+    cam_names = [os.path.basename(d) for d in CAM_DEVS]
     registration = {
         "device": "orangepi",
         "ip": my_ip,
@@ -385,18 +421,11 @@ def _register_and_send_loop(server_url: str, my_ip: str, drive_port: int):
         "drive_port": drive_port,
         "dashboard_port": drive_port,
     }
+    poster = _PersistentPoster(server_url)
 
     while True:
         try:
-            data = json.dumps(registration).encode()
-            req = urllib.request.Request(
-                f"{server_url}/api/register",
-                data=data,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=5):
-                pass
+            poster.post("/api/register", registration)
             print(f"[sender] Registered with central server — cameras: {cam_names} drive_port: {drive_port}")
         except Exception as e:
             print(f"[sender] Registration failed: {e} — retrying in 5s")
@@ -406,7 +435,7 @@ def _register_and_send_loop(server_url: str, my_ip: str, drive_port: int):
         while True:
             try:
                 with _state_lock:
-                    state = json.loads(json.dumps(_sensor_state))
+                    state = copy.deepcopy(_sensor_state)
                 payload = {
                     "device": "orangepi",
                     "ts": time.time(),
@@ -416,15 +445,7 @@ def _register_and_send_loop(server_url: str, my_ip: str, drive_port: int):
                     "dashboard_port": drive_port,
                     "sensors": state,
                 }
-                data = json.dumps(payload).encode()
-                req = urllib.request.Request(
-                    f"{server_url}/api/data",
-                    data=data,
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=3):
-                    pass
+                poster.post("/api/data", payload)
             except Exception as e:
                 print(f"[sender] POST failed: {e} — re-registering")
                 break

@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import argparse
 import glob
+import http.client
 import json
 import os
 import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -22,6 +24,7 @@ CAM_PORT = int(os.getenv("CAM_PORT", "5000"))
 SEND_HZ = 2.0
 RETRY_SECONDS = 5.0
 MAX_CAMERAS = 3
+_CAM_CACHE_TTL = 10.0
 
 
 def discover_camera_names(max_cameras: int = MAX_CAMERAS) -> list[str]:
@@ -48,19 +51,49 @@ def start_camera_server(script_path: Path, cam_port: int) -> subprocess.Popen:
     )
 
 
-def post_json(url: str, payload: dict) -> None:
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=5) as resp:
-        resp.read()
+class _PersistentPoster:
+    """Reuses a single TCP connection for repeated POSTs to the same host."""
+
+    def __init__(self, server_url: str, timeout: float = 5.0):
+        parsed = urllib.parse.urlsplit(server_url)
+        self._host = parsed.netloc
+        self._https = parsed.scheme == "https"
+        self._timeout = timeout
+        self._conn: http.client.HTTPConnection | None = None
+
+    def _connect(self) -> http.client.HTTPConnection:
+        if self._https:
+            return http.client.HTTPSConnection(self._host, timeout=self._timeout)
+        return http.client.HTTPConnection(self._host, timeout=self._timeout)
+
+    def post(self, path: str, payload: dict) -> None:
+        data = json.dumps(payload, separators=(",", ":")).encode()
+        for attempt in range(2):
+            try:
+                if self._conn is None:
+                    self._conn = self._connect()
+                self._conn.request(
+                    "POST", path, body=data,
+                    headers={"Content-Type": "application/json", "Connection": "keep-alive"},
+                )
+                self._conn.getresponse().read()
+                return
+            except Exception:
+                self._conn = None
+                if attempt == 0:
+                    continue
+                raise
+
+
+_cam_cache: list[str] = []
+_cam_cache_ts: float = 0.0
 
 
 def _fetch_local_camera_names(cam_port: int, max_cameras: int = MAX_CAMERAS) -> list[str]:
+    global _cam_cache, _cam_cache_ts
+    now = time.monotonic()
+    if now - _cam_cache_ts < _CAM_CACHE_TTL and _cam_cache:
+        return _cam_cache
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{cam_port}/api/cameras", timeout=2) as resp:
             payload = json.loads(resp.read().decode("utf-8", errors="replace"))
@@ -76,10 +109,16 @@ def _fetch_local_camera_names(cam_port: int, max_cameras: int = MAX_CAMERAS) -> 
                     continue
                 names.append(Path(str(device)).name)
         if names:
-            return names[:max_cameras]
+            _cam_cache = names[:max_cameras]
+            _cam_cache_ts = now
+            return _cam_cache
     except Exception:
         pass
-    return discover_camera_names(max_cameras=max_cameras)
+    result = discover_camera_names(max_cameras=max_cameras)
+    if result:
+        _cam_cache = result
+        _cam_cache_ts = now
+    return result
 
 
 def register_and_send_loop(
@@ -88,7 +127,7 @@ def register_and_send_loop(
     cam_port: int,
     max_cameras: int = MAX_CAMERAS,
 ) -> None:
-    camera_names = _fetch_local_camera_names(cam_port, max_cameras=max_cameras)
+    poster = _PersistentPoster(server_url)
 
     while True:
         camera_names = _fetch_local_camera_names(cam_port, max_cameras=max_cameras)
@@ -99,7 +138,7 @@ def register_and_send_loop(
             "cameras": camera_names,
         }
         try:
-            post_json(f"{server_url.rstrip('/')}/api/register", registration)
+            poster.post("/api/register", registration)
             print(f"[RasPi sender] Registered with dashboard server: {registration}")
         except Exception as exc:
             print(f"[RasPi sender] Registration failed: {exc} — retrying in {RETRY_SECONDS}s")
@@ -114,13 +153,8 @@ def register_and_send_loop(
                     "ts": time.time(),
                     "cam_port": cam_port,
                     "cameras": camera_names,
-                    "sensors": {
-                        "camera_count": len(camera_names),
-                        "camera_names": camera_names,
-                        "camera_port": cam_port,
-                    },
                 }
-                post_json(f"{server_url.rstrip('/')}/api/data", payload)
+                poster.post("/api/data", payload)
             except Exception as exc:
                 print(f"[RasPi sender] Data POST failed: {exc} — will re-register")
                 break
