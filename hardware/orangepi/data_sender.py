@@ -64,7 +64,7 @@ IMU_PORT = os.getenv("IMU_PORT", "/dev/ttyS6")
 CAM_PORT = int(os.getenv("CAM_PORT", "8890"))
 ROTATE_180 = {"/dev/video0", "/dev/video2", "/dev/video6"}
 CAM_W, CAM_H, CAM_FPS, CAM_Q = 1280, 720, 10, 2
-SEND_HZ = 5.0
+SEND_HZ = 10.0
 DRIVE_ACTIONS = {"forward", "backward", "left", "right", "stop"}
 
 DASHBOARD_URL: Optional[str] = None
@@ -245,6 +245,38 @@ class _PersistentPoster:
                 raise
 
 
+class _PersistentReader:
+    """Reuses a single TCP connection for repeated GETs from the same host."""
+
+    def __init__(self, timeout: float = 2.5):
+        self._timeout = timeout
+        self._host: str = ""
+        self._conn: http.client.HTTPConnection | None = None
+
+    def get_json(self, url: str) -> dict:
+        parsed = urllib.parse.urlsplit(url)
+        host = parsed.netloc
+        path = parsed.path or "/"
+        if host != self._host:
+            self._conn = None
+            self._host = host
+        for attempt in range(2):
+            try:
+                if self._conn is None:
+                    self._conn = http.client.HTTPConnection(host, timeout=self._timeout)
+                self._conn.request("GET", path, headers={"Connection": "keep-alive"})
+                resp = self._conn.getresponse()
+                raw = resp.read().decode("utf-8", errors="replace")
+                data = json.loads(raw) if raw else {}
+                return data if isinstance(data, dict) else {}
+            except Exception:
+                self._conn = None
+                if attempt == 0:
+                    continue
+                return {}
+        return {}
+
+
 def _read_json_from_url(url: str, timeout: float = 2.5) -> dict:
     with urllib.request.urlopen(url, timeout=timeout) as resp:
         raw = resp.read().decode("utf-8", errors="replace")
@@ -259,6 +291,7 @@ def _sensor_loop(dashboard_url: Optional[str]):
     enc_left: Optional[object] = None
     enc_right: Optional[object] = None
     _enc_prev: dict = {"left": None, "right": None, "ts": None}
+    _reader = _PersistentReader(timeout=2.0)
 
     if not dashboard_url:
         if _HAS_GPS:
@@ -301,7 +334,7 @@ def _sensor_loop(dashboard_url: Optional[str]):
 
         if dashboard_url:
             try:
-                dash = _read_json_from_url(f"{dashboard_url.rstrip('/')}/api/state", timeout=2.0)
+                dash = _reader.get_json(f"{dashboard_url.rstrip('/')}/api/state")
                 g = dash.get("gps", {})
                 state["gps"].update(
                     {

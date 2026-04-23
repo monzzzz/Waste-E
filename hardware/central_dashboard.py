@@ -1582,7 +1582,7 @@ wireControls();
 drawCompass(0);
 drawBirdEye(0, 0, 0);
 refresh();
-setInterval(refresh, 1500);
+setInterval(refresh, 500);
 </script>
 </body>
 </html>

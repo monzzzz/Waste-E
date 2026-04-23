@@ -30,7 +30,7 @@ _CAM_CACHE_TTL = 10.0
 def discover_camera_names(max_cameras: int = MAX_CAMERAS) -> list[str]:
     devices = sorted(
         (Path(p) for p in glob.glob("/dev/video*")),
-        key=lambda p: int(p.name.replace("video", "")) if p.name.startswith("video") else 9999,
+        key=lambda p: int(p.name[5:]) if p.name.startswith("video") and p.name[5:].isdigit() else 9999,
     )
     return [p.name for p in devices[:max_cameras] if p.exists()]
 
