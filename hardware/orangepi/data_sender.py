@@ -657,6 +657,10 @@ if __name__ == "__main__":
     if mediamtx_proc:
         time.sleep(1.5)  # let MediaMTX bind its ports before ffmpeg connects
         print(f"[OrangePi] WebRTC mode — MediaMTX RTSP:{MEDIAMTX_RTSP_PORT} WebRTC:{MEDIAMTX_WEBRTC_PORT}")
+        for _dev in CAM_DEVS:
+            if os.path.exists(_dev):
+                print(f"[OrangePi] Starting ffmpeg → RTSP for {_dev}")
+                _get_proc(_dev)
     else:
         print("[OrangePi] MJPEG mode — MediaMTX binary not found, falling back to pipe streaming")
 
