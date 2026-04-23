@@ -47,7 +47,7 @@ except Exception:
     _HAS_IMU = False
 
 try:
-    from motorencoder import AS5600Encoder  # noqa: F401  # kept for compatibility
+    from motorencoder import AS5600Encoder
     _HAS_ENC = True
 except Exception:
     _HAS_ENC = False
@@ -256,6 +256,9 @@ def _read_json_from_url(url: str, timeout: float = 2.5) -> dict:
 def _sensor_loop(dashboard_url: Optional[str]):
     gps: Optional[object] = None
     imu: Optional[object] = None
+    enc_left: Optional[object] = None
+    enc_right: Optional[object] = None
+    _enc_prev: dict = {"left": None, "right": None, "ts": None}
 
     if not dashboard_url:
         if _HAS_GPS:
@@ -277,6 +280,20 @@ def _sensor_loop(dashboard_url: Optional[str]):
                     print(f"[IMU] connected on {IMU_PORT}")
             except Exception as e:
                 print(f"[IMU] error: {e}")
+
+        if _HAS_ENC:
+            try:
+                enc_left = AS5600Encoder(bus_id=1, address=0x36)
+                enc_left.open()
+                print("[ENC] left encoder opened (bus 1, addr 0x36)")
+            except Exception as e:
+                print(f"[ENC] left encoder: {e}")
+            try:
+                enc_right = AS5600Encoder(bus_id=0, address=0x36)
+                enc_right.open()
+                print("[ENC] right encoder opened (bus 0, addr 0x36)")
+            except Exception as e:
+                print(f"[ENC] right encoder: {e}")
 
     while True:
         with _state_lock:
@@ -315,6 +332,14 @@ def _sensor_loop(dashboard_url: Optional[str]):
                         "cal_mag": im.get("cal_mag", 0),
                     }
                 )
+                enc = dash.get("encoders", {})
+                if isinstance(enc, dict):
+                    state["encoders"].update({
+                        "left_rpm": enc.get("left_rpm"),
+                        "right_rpm": enc.get("right_rpm"),
+                        "left_angle": enc.get("left_angle"),
+                        "right_angle": enc.get("right_angle"),
+                    })
                 state["motor_online"] = bool(dash.get("motor_online"))
                 state["motor_source"] = "dashboard"
             except Exception:
@@ -378,6 +403,37 @@ def _sensor_loop(dashboard_url: Optional[str]):
             with _motor_lock:
                 state["motor_online"] = _active_motor is not None
             state["motor_source"] = "local"
+
+            now_enc = time.time()
+            if enc_left:
+                try:
+                    la = enc_left.read_angle_deg()
+                    state["encoders"]["left_angle"] = round(la, 2)
+                    if _enc_prev["left"] is not None and _enc_prev["ts"] is not None:
+                        dt = now_enc - _enc_prev["ts"]
+                        if dt > 0:
+                            d = la - _enc_prev["left"]
+                            if d > 180: d -= 360
+                            elif d < -180: d += 360
+                            state["encoders"]["left_rpm"] = round((d / 360.0) / dt * 60.0, 2)
+                    _enc_prev["left"] = la
+                except Exception:
+                    pass
+            if enc_right:
+                try:
+                    ra = enc_right.read_angle_deg()
+                    state["encoders"]["right_angle"] = round(ra, 2)
+                    if _enc_prev["right"] is not None and _enc_prev["ts"] is not None:
+                        dt = now_enc - _enc_prev["ts"]
+                        if dt > 0:
+                            d = ra - _enc_prev["right"]
+                            if d > 180: d -= 360
+                            elif d < -180: d += 360
+                            state["encoders"]["right_rpm"] = round((d / 360.0) / dt * 60.0, 2)
+                    _enc_prev["right"] = ra
+                except Exception:
+                    pass
+            _enc_prev["ts"] = now_enc
 
         state["ts"] = time.time()
         with _state_lock:

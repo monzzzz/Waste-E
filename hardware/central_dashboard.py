@@ -739,7 +739,19 @@ html,body{
 .drive-btn:active{transform:translateY(1px)}
 .drive-btn.active{background:#00d2ff1d;border-color:#00d2ff;color:var(--cyan)}
 .drive-btn.stop{background:#3a121a;border-color:#7f1d2d;color:#fda4af}
-.drive-btn:disabled{opacity:.4;cursor:not-allowed}
+.drive-btn:disabled{opacity:.25;cursor:not-allowed;filter:grayscale(.6)}
+#motor-offline-banner{
+  display:none;
+  background:#1e0a0e;
+  border:1px solid #7f1d2d;
+  border-radius:8px;
+  padding:8px 12px;
+  font-size:11px;
+  font-weight:600;
+  color:#fca5a5;
+  letter-spacing:.06em;
+  text-align:center;
+}
 #motor-meta{
   margin-top:auto;
   background:rgba(17,25,43,.75);
@@ -826,7 +838,7 @@ html,body{
   gap:2px;
 }
 .enc-card .lbl{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-weight:700}
-.enc-card .val{font-family:var(--mono);font-size:14px;font-weight:700;color:var(--text)}
+.enc-card .val{font-family:var(--mono);font-size:20px;font-weight:700;color:var(--text)}
 .enc-card .unit{font-size:10px;color:var(--muted)}
 .enc-card.cyan .val{color:var(--cyan)}
 .enc-card.green .val{color:var(--emerald)}
@@ -835,12 +847,45 @@ html,body{
   margin-top:2px;
   border:1px solid var(--border);
   border-radius:10px;
-  padding:9px;
+  padding:9px 12px;
   background:rgba(17,25,43,.55);
   color:var(--muted);
   font-size:11px;
   line-height:1.45;
+  display:flex;
+  align-items:center;
+  gap:8px;
 }
+.no-fix-badge{
+  display:inline-block;
+  padding:1px 7px;
+  border-radius:999px;
+  font-size:9px;
+  font-weight:700;
+  letter-spacing:.08em;
+  background:#2c0a13;
+  border:1px solid #f43f5e50;
+  color:var(--rose);
+  vertical-align:middle;
+  margin-left:6px;
+}
+.fix-badge{
+  display:inline-block;
+  padding:1px 7px;
+  border-radius:999px;
+  font-size:9px;
+  font-weight:700;
+  letter-spacing:.08em;
+  background:#06271a;
+  border:1px solid #22c55e50;
+  color:var(--emerald);
+  vertical-align:middle;
+  margin-left:6px;
+}
+.status-val{font-family:var(--mono);font-size:11px;font-weight:700}
+.status-val.online{color:var(--emerald)}
+.status-val.offline{color:var(--rose)}
+.status-val.warn{color:var(--amber)}
 
 .live-dot{
   width:6px;height:6px;border-radius:50%;
@@ -914,7 +959,7 @@ html,body{
       <div class="gstat"><div class="glbl">Altitude</div><div class="gval" id="g-alt">-</div></div>
       <div class="gstat"><div class="glbl">Speed</div><div class="gval" id="g-spd">-</div></div>
       <div class="gstat"><div class="glbl">Heading</div><div class="gval" id="g-hdg">-</div></div>
-      <div class="gstat"><div class="glbl">Satellites</div><div class="gval" id="g-sat">-</div></div>
+      <div class="gstat"><div class="glbl">Satellites <span id="g-fix-badge" class="no-fix-badge">NO FIX</span></div><div class="gval" id="g-sat">-</div></div>
     </div>
   </section>
 
@@ -972,16 +1017,18 @@ html,body{
       <div class="phdr-right"><div id="drive-status">idle</div></div>
     </div>
     <div id="motor-wrap">
+      <div id="motor-offline-banner">⚠ MOTOR DRIVER OFFLINE — check hardware</div>
       <div id="drive-grid">
-        <button class="drive-btn" data-action="forward" style="grid-column:2">FORWARD</button>
-        <button class="drive-btn" data-action="left" style="grid-column:1;grid-row:2">LEFT</button>
-        <button class="drive-btn stop" data-action="stop" style="grid-column:2;grid-row:2">STOP</button>
-        <button class="drive-btn" data-action="right" style="grid-column:3;grid-row:2">RIGHT</button>
-        <button class="drive-btn" data-action="backward" style="grid-column:2;grid-row:3">BACKWARD</button>
+        <button class="drive-btn" data-action="forward" style="grid-column:2">▲ FORWARD</button>
+        <button class="drive-btn" data-action="left" style="grid-column:1;grid-row:2">◀ LEFT</button>
+        <button class="drive-btn stop" data-action="stop" style="grid-column:2;grid-row:2">■ STOP</button>
+        <button class="drive-btn" data-action="right" style="grid-column:3;grid-row:2">RIGHT ▶</button>
+        <button class="drive-btn" data-action="backward" style="grid-column:2;grid-row:3">▼ BACKWARD</button>
       </div>
+      <div style="font-size:10px;color:var(--muted);text-align:center;letter-spacing:.06em">WASD / Arrow keys</div>
 
       <div id="motor-meta">
-        <div class="meta-row"><span class="k">Controller</span><span class="v" id="m-online">offline</span></div>
+        <div class="meta-row"><span class="k">Controller</span><span class="v status-val offline" id="m-online">offline</span></div>
         <div class="meta-row"><span class="k">Last Action</span><span class="v" id="m-last-action">stop</span></div>
         <div class="meta-row"><span class="k">Last Result</span><span class="v" id="m-last-result">-</span></div>
         <div class="meta-row"><span class="k">Target</span><span class="v" id="m-target">-</span></div>
@@ -1011,7 +1058,7 @@ html,body{
       <div class="enc-card cyan"><div class="lbl">Right RPM</div><div class="val" id="e-right-rpm">-</div><div class="unit">rpm</div></div>
       <div class="enc-card green"><div class="lbl">Left Angle</div><div class="val" id="e-left-angle">-</div><div class="unit">deg</div></div>
       <div class="enc-card green"><div class="lbl">Right Angle</div><div class="val" id="e-right-angle">-</div><div class="unit">deg</div></div>
-      <div id="encoder-note">Waiting for OrangePi encoder telemetry...</div>
+      <div id="encoder-note"><span>⚙</span><span id="encoder-note-text">Waiting for OrangePi encoder telemetry...</span></div>
     </div>
   </section>
 </div>
@@ -1391,17 +1438,29 @@ function applySummary(data){
   const hasFix = !!gps.fix && gps.lat !== null && gps.lon !== null;
   setLiveDot('gps-live', hasFix);
 
-  document.getElementById('g-lat').textContent = fmt(gps.lat, 6);
-  document.getElementById('g-lon').textContent = fmt(gps.lon, 6);
+  const fixBadge = document.getElementById('g-fix-badge');
+  if (fixBadge) {
+    fixBadge.textContent = hasFix ? 'FIX' : 'NO FIX';
+    fixBadge.className = hasFix ? 'fix-badge' : 'no-fix-badge';
+  }
+  const latEl = document.getElementById('g-lat');
+  const lonEl = document.getElementById('g-lon');
+  latEl.textContent = fmt(gps.lat, 6);
+  lonEl.textContent = fmt(gps.lon, 6);
+  latEl.style.color = hasFix ? 'var(--cyan)' : 'var(--muted)';
+  lonEl.style.color = hasFix ? 'var(--cyan)' : 'var(--muted)';
   document.getElementById('g-alt').textContent = gps.alt != null ? `${fmt(gps.alt, 1)} m` : '-';
   document.getElementById('g-spd').textContent = gps.speed != null ? `${fmt(gps.speed, 1)} km/h` : '-';
   document.getElementById('g-hdg').textContent = deg(gps.heading);
-  document.getElementById('g-sat').textContent = mono(gps.satellites);
+  const satEl = document.getElementById('g-sat');
+  satEl.textContent = mono(gps.satellites);
+  satEl.style.color = hasFix ? 'var(--text)' : 'var(--rose)';
   updateMap(gps.lat, gps.lon);
 
   const imu = data.imu || {};
   const hasImu = Object.keys(imu).length > 0;
-  setLiveDot('imu-live', hasImu);
+  const imuConnected = hasImu && (imu.temp !== null && imu.temp !== undefined);
+  setLiveDot('imu-live', imuConnected);
 
   document.getElementById('heading-big').textContent = deg(imu.heading);
   document.getElementById('heading-dir').textContent = headingToDir(imu.heading);
@@ -1435,7 +1494,16 @@ function applySummary(data){
     btn.disabled = !canDrive;
   });
 
-  document.getElementById('m-online').textContent = motor.online ? 'online' : (canDrive ? 'unknown' : 'offline');
+  const mOnlineEl = document.getElementById('m-online');
+  if (motor.online) {
+    mOnlineEl.textContent = 'online';
+    mOnlineEl.className = 'v status-val online';
+  } else {
+    mOnlineEl.textContent = 'offline';
+    mOnlineEl.className = 'v status-val offline';
+  }
+  const offlineBanner = document.getElementById('motor-offline-banner');
+  if (offlineBanner) offlineBanner.style.display = (!motor.online && canDrive) ? 'block' : 'none';
   document.getElementById('m-last-action').textContent = mono(motor.last_action || currentAction);
   if (motor.last_ok === true) {
     document.getElementById('m-last-result').textContent = 'ok';
@@ -1455,13 +1523,14 @@ function applySummary(data){
 
   const hasEncoder = ['left_rpm', 'right_rpm', 'left_angle', 'right_angle']
     .some((k) => enc[k] !== null && enc[k] !== undefined);
+  const encNoteText = document.getElementById('encoder-note-text');
   if (hasEncoder){
     const lr = Number(enc.left_rpm || 0);
     const rr = Number(enc.right_rpm || 0);
     const drift = (lr - rr).toFixed(2);
-    document.getElementById('encoder-note').textContent = `Left/Right RPM drift: ${drift} rpm | Timestamp: ${now.toLocaleTimeString()}`;
+    if (encNoteText) encNoteText.textContent = `L/R drift: ${drift} rpm  ·  updated ${now.toLocaleTimeString()}`;
   } else {
-    document.getElementById('encoder-note').textContent = 'Encoder feed connected, waiting for numeric samples.';
+    if (encNoteText) encNoteText.textContent = 'Waiting for encoder data from OrangePi...';
   }
 
   if (canDrive) {
