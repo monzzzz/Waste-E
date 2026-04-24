@@ -63,15 +63,15 @@ GPS_PORT = os.getenv("GPS_PORT", "/dev/ttyS0")
 IMU_PORT = os.getenv("IMU_PORT", "/dev/ttyS6")
 CAM_PORT = int(os.getenv("CAM_PORT", "8890"))
 ROTATE_180 = {"/dev/video0", "/dev/video2", "/dev/video6"}
-CAM_W, CAM_H, CAM_FPS, CAM_Q = 640, 480, 15, 2
-CAM_W_WEBRTC, CAM_H_WEBRTC = 1280, 720
+CAM_W, CAM_H, CAM_FPS, CAM_Q = 640, 480, 10, 2
+CAM_W_WEBRTC, CAM_H_WEBRTC = 640, 480
 SEND_HZ = 5.0
 DRIVE_ACTIONS = {"forward", "backward", "left", "right", "stop"}
 
 MEDIAMTX_BIN = os.getenv("MEDIAMTX_BIN", str(Path(__file__).parent / "mediamtx"))
 MEDIAMTX_RTSP_PORT = int(os.getenv("MEDIAMTX_RTSP_PORT", "8554"))
 MEDIAMTX_WEBRTC_PORT = int(os.getenv("MEDIAMTX_WEBRTC_PORT", "8889"))
-H264_ENCODER = os.getenv("H264_ENCODER", "h264_v4l2m2m")
+H264_ENCODER = os.getenv("H264_ENCODER", "libx264")
 _WEBRTC_MODE = os.path.isfile(MEDIAMTX_BIN) and os.access(MEDIAMTX_BIN, os.X_OK)
 
 DASHBOARD_URL: Optional[str] = None
