@@ -1,7 +1,8 @@
-from flask import Flask, Response, jsonify, render_template_string
+from flask import Flask, Response, jsonify, render_template_string, request
 import cv2
 import sys
 import os
+import subprocess
 import time
 import threading
 
@@ -172,6 +173,25 @@ def video_feed(camera_id):
     if camera_id < 0 or camera_id >= len(cameras):
         return 'Camera not found', 404
     return Response(generate_frames(camera_id), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+
+@app.route('/api/power', methods=['POST'])
+def api_power():
+    body = request.get_json(silent=True) or {}
+    action = str(body.get('action') or '').strip().lower()
+    if action not in ('shutdown', 'reboot'):
+        return jsonify({'error': 'invalid action'}), 400
+
+    def _run():
+        time.sleep(1.5)
+        if action == 'shutdown':
+            subprocess.run(['shutdown', '-h', 'now'])
+        else:
+            subprocess.run(['reboot'])
+
+    threading.Thread(target=_run, daemon=True).start()
+    print(f'[power] {action} requested')
+    return jsonify({'ok': True, 'action': action})
 
 
 @app.route('/api/cameras')

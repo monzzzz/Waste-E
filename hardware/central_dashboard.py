@@ -486,6 +486,40 @@ def api_drive() -> Response:
     return jsonify({"error": f"drive proxy failed: {last_error}", "targets": attempted}), 502
 
 
+@app.route("/api/power/<device>", methods=["POST"])
+def api_power_proxy(device: str) -> Response:
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "invalid json"}), 400
+
+    action = str(payload.get("action") or "").strip().lower()
+    if action not in ("shutdown", "reboot"):
+        return jsonify({"error": "invalid action"}), 400
+
+    with _device_lock:
+        info = _devices.get(device)
+    if not info:
+        return jsonify({"error": f"device not registered: {device}"}), 404
+
+    ip = info.get("ip")
+    cam_port = info.get("cam_port")
+    if not ip or not cam_port:
+        return jsonify({"error": "device has no known address"}), 503
+
+    url = f"http://{ip}:{cam_port}/api/power"
+    body = json.dumps({"action": action}).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
+            return jsonify(_decode_json_bytes(resp.read()))
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
+
+
 @app.route("/")
 def index() -> str:
     return render_template_string(
@@ -909,6 +943,16 @@ html,body{
   box-shadow:0 0 8px var(--emerald);
   animation:pulseg 2s infinite;
 }
+.pwr-group{display:flex;gap:3px;align-items:center}
+.pwr-btn{
+  width:24px;height:24px;border-radius:6px;
+  background:#0f1928;border:1px solid var(--border-hi);
+  color:var(--muted);font-size:13px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  transition:all .12s;padding:0;
+}
+.pwr-btn:hover{border-color:var(--amber);color:var(--amber)}
+.pwr-btn.off:hover{border-color:var(--rose);color:var(--rose)}
 
 @media (max-width:1400px){
   #root{
@@ -950,7 +994,15 @@ html,body{
     </div>
 
     <div class="chip offline" id="chip-opi"><div class="dot"></div>OrangePi offline</div>
+    <div class="pwr-group">
+      <button class="pwr-btn" onclick="doPower('orangepi','reboot')" title="Reboot OrangePi">↺</button>
+      <button class="pwr-btn off" onclick="doPower('orangepi','shutdown')" title="Shutdown OrangePi">⏻</button>
+    </div>
     <div class="chip offline" id="chip-rpi"><div class="dot"></div>Raspberry Pi offline</div>
+    <div class="pwr-group">
+      <button class="pwr-btn" onclick="doPower('rasppi','reboot')" title="Reboot Raspberry Pi">↺</button>
+      <button class="pwr-btn off" onclick="doPower('rasppi','shutdown')" title="Shutdown Raspberry Pi">⏻</button>
+    </div>
     <div class="chip warn" id="chip-cams"><div class="dot"></div>0 / {{ camera_target }} cameras</div>
 
     <div id="hdr-right">
@@ -1633,6 +1685,27 @@ async function refresh(){
     document.getElementById('last-refresh').textContent = `telemetry error: ${err.message}`;
     setChip('chip-opi', 'offline', 'OrangePi offline');
     setChip('chip-rpi', 'offline', 'Raspberry Pi offline');
+  }
+}
+
+async function doPower(device, action) {
+  const label = device === 'orangepi' ? 'OrangePi' : 'Raspberry Pi';
+  const verb = action === 'shutdown' ? 'Shutdown' : 'Reboot';
+  if (!confirm(`${verb} ${label}?\n\nThe device will go offline.`)) return;
+  try {
+    const resp = await fetch(`/api/power/${device}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ action }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok) {
+      alert(`${verb} command sent to ${label}.`);
+    } else {
+      alert(`Error: ${data.error || resp.statusText}`);
+    }
+  } catch(err) {
+    alert(`Could not reach dashboard: ${err.message}`);
   }
 }
 

@@ -588,6 +588,25 @@ def api_cameras():
     return json.dumps([os.path.basename(d) for d in CAM_DEVS if os.path.exists(d)])
 
 
+@app.route("/api/power", methods=["POST"])
+def api_power():
+    body = request.get_json(silent=True) or {}
+    action = str(body.get("action") or "").strip().lower()
+    if action not in ("shutdown", "reboot"):
+        return json.dumps({"error": "invalid action"}), 400
+
+    def _run():
+        time.sleep(1.5)
+        if action == "shutdown":
+            subprocess.run(["shutdown", "-h", "now"])
+        else:
+            subprocess.run(["reboot"])
+
+    threading.Thread(target=_run, daemon=True).start()
+    print(f"[power] {action} requested")
+    return json.dumps({"ok": True, "action": action})
+
+
 @app.route("/api/drive", methods=["POST"])
 def api_drive():
     global _motor_last_error
