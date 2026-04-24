@@ -1214,7 +1214,10 @@ async function _startWhep(camId, whepUrl) {
   }
   pc.ontrack = (e) => {
     const vid = document.getElementById('vid-' + camId);
-    if (vid) vid.srcObject = e.streams[0] || new MediaStream([e.track]);
+    if (vid) {
+      vid.srcObject = e.streams[0] || new MediaStream([e.track]);
+      vid.play().catch(() => {});
+    }
   };
   pc.onconnectionstatechange = () => {
     if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
