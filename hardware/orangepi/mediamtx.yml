@@ -10,8 +10,5 @@ webrtcICEServers2: []
 
 hlsAddress: :8888
 
-# Allow all paths without authentication
-authMethod: none
-
 paths:
   all_others:
