@@ -72,8 +72,6 @@ def _make_camera_url(device_info: dict[str, Any], camera_name: str, index: int) 
 
 
 def _make_webrtc_url(device_info: dict[str, Any], camera_name: str) -> str:
-    if device_info.get("device") != "orangepi":
-        return ""
     ip = device_info.get("ip")
     webrtc_port = device_info.get("webrtc_port")
     if not ip or not webrtc_port:

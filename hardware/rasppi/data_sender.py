@@ -2,8 +2,11 @@
 """
 Raspberry Pi data sender for Waste-E.
 
-Starts the local camera server on the RasPi and registers the device with the
-central dashboard server.
+WebRTC mode (when mediamtx binary is present):
+  Starts MediaMTX + ffmpeg per camera → RTSP → browser via WHEP.
+
+MJPEG fallback (no mediamtx binary):
+  Starts camera_stream.py and serves MJPEG over HTTP.
 """
 from __future__ import annotations
 
@@ -19,12 +22,22 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from typing import Optional
 
 CAM_PORT = int(os.getenv("CAM_PORT", "5000"))
 SEND_HZ = 2.0
 RETRY_SECONDS = 5.0
 MAX_CAMERAS = 3
 _CAM_CACHE_TTL = 10.0
+
+MEDIAMTX_BIN = os.getenv("MEDIAMTX_BIN", str(Path(__file__).parent / "mediamtx"))
+MEDIAMTX_RTSP_PORT = int(os.getenv("MEDIAMTX_RTSP_PORT", "8554"))
+MEDIAMTX_WEBRTC_PORT = int(os.getenv("MEDIAMTX_WEBRTC_PORT", "8889"))
+H264_ENCODER = os.getenv("H264_ENCODER", "h264_v4l2m2m")
+_WEBRTC_MODE = os.path.isfile(MEDIAMTX_BIN) and os.access(MEDIAMTX_BIN, os.X_OK)
+
+_CAM_PROCS: dict[str, subprocess.Popen] = {}
+_CAM_LOCK = threading.Lock()
 
 
 def discover_camera_names(max_cameras: int = MAX_CAMERAS) -> list[str]:
@@ -35,18 +48,66 @@ def discover_camera_names(max_cameras: int = MAX_CAMERAS) -> list[str]:
     return [p.name for p in devices[:max_cameras] if p.exists()]
 
 
+def _start_mediamtx() -> Optional[subprocess.Popen]:
+    if not _WEBRTC_MODE:
+        return None
+    cfg = Path(MEDIAMTX_BIN).parent / "mediamtx.yml"
+    cmd = [MEDIAMTX_BIN] + ([str(cfg)] if cfg.exists() else [])
+    print(f"[RasPi] Starting MediaMTX ({MEDIAMTX_BIN})")
+    return subprocess.Popen(
+        cmd, cwd=str(Path(MEDIAMTX_BIN).parent),
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
+def _start_ffmpeg(dev_name: str) -> subprocess.Popen:
+    dev = f"/dev/{dev_name}"
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-f", "v4l2", "-input_format", "mjpeg",
+        "-framerate", "15",
+        "-video_size", "1280x720",
+        "-i", dev,
+    ]
+    if H264_ENCODER == "libx264":
+        cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency"]
+    else:
+        cmd += ["-c:v", H264_ENCODER]
+    cmd += [
+        "-b:v", "800k", "-g", "30",
+        "-f", "rtsp", "-rtsp_transport", "tcp",
+        f"rtsp://127.0.0.1:{MEDIAMTX_RTSP_PORT}/{dev_name}",
+    ]
+    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, bufsize=0)
+
+
+def _get_ffmpeg_proc(dev_name: str) -> subprocess.Popen:
+    with _CAM_LOCK:
+        p = _CAM_PROCS.get(dev_name)
+        if p is None or p.poll() is not None:
+            print(f"[RasPi] Starting ffmpeg → RTSP for /dev/{dev_name}")
+            _CAM_PROCS[dev_name] = _start_ffmpeg(dev_name)
+        return _CAM_PROCS[dev_name]
+
+
+def _ffmpeg_watchdog(camera_names: list[str]) -> None:
+    """Restart dead ffmpeg processes in WebRTC mode."""
+    while True:
+        time.sleep(5)
+        for name in camera_names:
+            if os.path.exists(f"/dev/{name}"):
+                _get_ffmpeg_proc(name)
+
+
 def start_camera_server(script_path: Path, cam_port: int) -> subprocess.Popen:
     if not script_path.exists():
         raise FileNotFoundError(f"Camera stream script not found: {script_path}")
-
     env = os.environ.copy()
     env["CAM_PORT"] = str(cam_port)
-
     return subprocess.Popen(
         [sys.executable, str(script_path)],
         cwd=str(script_path.parent),
-        stdout=None,
-        stderr=None,
+        stdout=None, stderr=None,
         env=env,
     )
 
@@ -90,6 +151,10 @@ _cam_cache_ts: float = 0.0
 
 
 def _fetch_local_camera_names(cam_port: int, max_cameras: int = MAX_CAMERAS) -> list[str]:
+    """In WebRTC mode skip the HTTP round-trip and just probe /dev/video*."""
+    if _WEBRTC_MODE:
+        return discover_camera_names(max_cameras=max_cameras)
+
     global _cam_cache, _cam_cache_ts
     now = time.monotonic()
     if now - _cam_cache_ts < _CAM_CACHE_TTL and _cam_cache:
@@ -136,10 +201,11 @@ def register_and_send_loop(
             "ip": my_ip,
             "cam_port": cam_port,
             "cameras": camera_names,
+            "webrtc_port": MEDIAMTX_WEBRTC_PORT if _WEBRTC_MODE else None,
         }
         try:
             poster.post("/api/register", registration)
-            print(f"[RasPi sender] Registered with dashboard server: {registration}")
+            print(f"[RasPi sender] Registered: {registration}")
         except Exception as exc:
             print(f"[RasPi sender] Registration failed: {exc} — retrying in {RETRY_SECONDS}s")
             time.sleep(RETRY_SECONDS)
@@ -153,6 +219,7 @@ def register_and_send_loop(
                     "ts": time.time(),
                     "cam_port": cam_port,
                     "cameras": camera_names,
+                    "webrtc_port": MEDIAMTX_WEBRTC_PORT if _WEBRTC_MODE else None,
                 }
                 poster.post("/api/data", payload)
             except Exception as exc:
@@ -170,23 +237,32 @@ if __name__ == "__main__":
     parser.add_argument("--cam-port", type=int, default=CAM_PORT,
                         help=f"This device's local camera server port (default {CAM_PORT})")
     parser.add_argument("--camera-script", default="camera_stream.py",
-                        help="Path to the local camera stream script")
+                        help="Path to the MJPEG fallback camera stream script")
     parser.add_argument("--max-cameras", type=int, default=MAX_CAMERAS,
                         help=f"Maximum number of camera feeds to register (default {MAX_CAMERAS})")
     args = parser.parse_args()
 
-    script_path = Path(__file__).parent / args.camera_script
     camera_names = discover_camera_names(max_cameras=args.max_cameras)
-
     if not camera_names:
-        print("WARNING: no /dev/video* devices found. The camera server may still start.")
+        print("WARNING: no /dev/video* devices found.")
 
-    print(f"[RasPi] Starting camera server from {script_path}")
-    camera_proc = start_camera_server(script_path, args.cam_port)
-    print(f"[RasPi] Camera server should be available on port {args.cam_port}")
-    time.sleep(1.5)
-    camera_names = _fetch_local_camera_names(args.cam_port, max_cameras=args.max_cameras)
-    print(f"[RasPi] Registered camera list: {camera_names}")
+    camera_proc = None
+
+    if _WEBRTC_MODE:
+        print(f"[RasPi] WebRTC mode — MediaMTX RTSP:{MEDIAMTX_RTSP_PORT} WebRTC:{MEDIAMTX_WEBRTC_PORT}")
+        mediamtx_proc = _start_mediamtx()
+        time.sleep(1.5)
+        for name in camera_names:
+            _get_ffmpeg_proc(name)
+        threading.Thread(target=_ffmpeg_watchdog, args=(camera_names,), daemon=True).start()
+    else:
+        print(f"[RasPi] MJPEG mode — starting camera_stream.py")
+        script_path = Path(__file__).parent / args.camera_script
+        camera_proc = start_camera_server(script_path, args.cam_port)
+        time.sleep(1.5)
+
+    print(f"[RasPi] Cameras: {camera_names}")
+    print(f"[RasPi] Central server: {args.server}")
 
     try:
         thread = threading.Thread(
@@ -202,4 +278,3 @@ if __name__ == "__main__":
         if camera_proc and camera_proc.poll() is None:
             camera_proc.terminate()
             camera_proc.wait(timeout=5)
-

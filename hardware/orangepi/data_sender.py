@@ -63,14 +63,15 @@ GPS_PORT = os.getenv("GPS_PORT", "/dev/ttyS0")
 IMU_PORT = os.getenv("IMU_PORT", "/dev/ttyS6")
 CAM_PORT = int(os.getenv("CAM_PORT", "8890"))
 ROTATE_180 = {"/dev/video0", "/dev/video2", "/dev/video6"}
-CAM_W, CAM_H, CAM_FPS, CAM_Q = 1280, 720, 10, 2
+CAM_W, CAM_H, CAM_FPS, CAM_Q = 640, 480, 15, 2
+CAM_W_WEBRTC, CAM_H_WEBRTC = 1280, 720
 SEND_HZ = 5.0
 DRIVE_ACTIONS = {"forward", "backward", "left", "right", "stop"}
 
 MEDIAMTX_BIN = os.getenv("MEDIAMTX_BIN", str(Path(__file__).parent / "mediamtx"))
 MEDIAMTX_RTSP_PORT = int(os.getenv("MEDIAMTX_RTSP_PORT", "8554"))
 MEDIAMTX_WEBRTC_PORT = int(os.getenv("MEDIAMTX_WEBRTC_PORT", "8889"))
-H264_ENCODER = os.getenv("H264_ENCODER", "libx264")
+H264_ENCODER = os.getenv("H264_ENCODER", "h264_v4l2m2m")
 _WEBRTC_MODE = os.path.isfile(MEDIAMTX_BIN) and os.access(MEDIAMTX_BIN, os.X_OK)
 
 DASHBOARD_URL: Optional[str] = None
@@ -119,6 +120,28 @@ def _start_mediamtx() -> Optional[subprocess.Popen]:
 
 def _start_ffmpeg(dev: str) -> subprocess.Popen:
     cam_name = os.path.basename(dev)
+
+    if _WEBRTC_MODE:
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-f", "v4l2", "-input_format", "mjpeg",
+            "-framerate", str(CAM_FPS),
+            "-video_size", f"{CAM_W_WEBRTC}x{CAM_H_WEBRTC}",
+            "-i", dev,
+        ]
+        if dev in ROTATE_180:
+            cmd += ["-vf", "hflip,vflip"]
+        if H264_ENCODER == "libx264":
+            cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency"]
+        else:
+            cmd += ["-c:v", H264_ENCODER]
+        cmd += [
+            "-b:v", "800k", "-g", str(CAM_FPS * 2),
+            "-f", "rtsp", "-rtsp_transport", "tcp",
+            f"rtsp://127.0.0.1:{MEDIAMTX_RTSP_PORT}/{cam_name}",
+        ]
+        return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, bufsize=0)
+
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-f", "v4l2", "-input_format", "mjpeg",
@@ -128,19 +151,6 @@ def _start_ffmpeg(dev: str) -> subprocess.Popen:
     ]
     if dev in ROTATE_180:
         cmd += ["-vf", "hflip,vflip"]
-
-    if _WEBRTC_MODE:
-        if H264_ENCODER == "libx264":
-            cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency"]
-        else:
-            cmd += ["-c:v", H264_ENCODER]
-        cmd += [
-            "-b:v", "1500k", "-g", str(CAM_FPS * 2),
-            "-f", "rtsp", "-rtsp_transport", "tcp",
-            f"rtsp://127.0.0.1:{MEDIAMTX_RTSP_PORT}/{cam_name}",
-        ]
-        return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, bufsize=0)
-
     cmd += ["-f", "mjpeg", "-q:v", str(CAM_Q), "pipe:1"]
     return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
 
