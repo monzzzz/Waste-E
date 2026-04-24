@@ -72,11 +72,11 @@ def _make_camera_url(device_info: dict[str, Any], camera_name: str, index: int) 
 
 
 def _make_webrtc_url(device_info: dict[str, Any], camera_name: str) -> str:
-    ip = device_info.get("ip")
+    device = device_info.get("device")
     webrtc_port = device_info.get("webrtc_port")
-    if not ip or not webrtc_port:
+    if not device or not webrtc_port:
         return ""
-    return f"http://{ip}:{webrtc_port}/{camera_name}/whep"
+    return f"/api/whep/{device}/{camera_name}"
 
 
 def _make_drive_url(device_info: dict[str, Any]) -> str:
@@ -482,6 +482,40 @@ def api_drive() -> Response:
         )
 
     return jsonify({"error": f"drive proxy failed: {last_error}", "targets": attempted}), 502
+
+
+@app.route("/api/whep/<device>/<path:stream>", methods=["POST", "OPTIONS"])
+def api_whep_proxy(device: str, stream: str) -> Response:
+    if request.method == "OPTIONS":
+        resp = Response()
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return resp
+
+    with _device_lock:
+        info = _devices.get(device)
+    if not info:
+        return Response("device not found", status=404)
+
+    ip = info.get("ip")
+    webrtc_port = info.get("webrtc_port")
+    if not ip or not webrtc_port:
+        return Response("device has no WebRTC endpoint", status=503)
+
+    url = f"http://{ip}:{webrtc_port}/{stream}/whep"
+    sdp_offer = request.get_data()
+    req = urllib.request.Request(
+        url, data=sdp_offer,
+        headers={"Content-Type": "application/sdp"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10.0) as resp:
+            sdp_answer = resp.read()
+            return Response(sdp_answer, content_type="application/sdp")
+    except Exception as exc:
+        return Response(str(exc), status=502)
 
 
 @app.route("/api/power/<device>", methods=["POST"])
