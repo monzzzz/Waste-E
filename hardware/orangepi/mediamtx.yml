@@ -7,7 +7,6 @@ rtspEncryption: no
 webrtcAddress: :8889
 webrtcEncryption: no
 webrtcICEServers2: []
-webrtcLocalIPs: [172.17.113.67]
 
 hlsAddress: :8888
 
