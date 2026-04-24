@@ -2,10 +2,8 @@ logLevel: warn
 logDestinations: [stdout]
 
 rtspAddress: :8554
-rtspEncryption: no
 
 webrtcAddress: :8889
-webrtcEncryption: no
 webrtcICEServers2: []
 
 hlsAddress: :8888
