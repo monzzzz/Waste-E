@@ -1212,14 +1212,18 @@ async function _startWhep(camId, whepUrl) {
     if (card) card.classList.add('down');
     return;
   }
-  pc.ontrack = (e) => {
+  function _attachStream() {
     const vid = document.getElementById('vid-' + camId);
-    if (vid) {
-      vid.srcObject = e.streams[0] || new MediaStream([e.track]);
-      vid.play().catch(() => {});
-    }
+    if (!vid) return;
+    const recv = pc.getReceivers().find(r => r.track && r.track.kind === 'video');
+    if (recv) { vid.srcObject = new MediaStream([recv.track]); vid.play().catch(() => {}); }
+  }
+  pc.ontrack = () => _attachStream();
+  pc.oniceconnectionstatechange = () => {
+    if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') _attachStream();
   };
   pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'connected') _attachStream();
     if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
       const card = document.querySelector('[data-camid="' + camId + '"]');
       if (card) card.classList.add('down');
