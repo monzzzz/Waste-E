@@ -11,10 +11,13 @@ MJPEG fallback (no mediamtx binary):
 from __future__ import annotations
 
 import argparse
+import fcntl
 import glob
 import http.client
 import json
 import os
+import re
+import struct
 import subprocess
 import sys
 import threading
@@ -40,12 +43,60 @@ _CAM_PROCS: dict[str, subprocess.Popen] = {}
 _CAM_LOCK = threading.Lock()
 
 
+_VIDIOC_QUERYCAP = 0x80685600  # aarch64 _IOR('V', 0, 104)
+_V4L2_CAP_VIDEO_CAPTURE = 0x00000001
+_USB_IFACE_RE = re.compile(r"^\d+-[\d.]+:\d+\.\d+$")  # e.g. "1-1.1:1.0"
+
+
+def _usb_parent_key(video_name: str) -> str | None:
+    """Return the USB device sysfs path (without interface suffix) for deduplication."""
+    try:
+        real = Path(f"/sys/class/video4linux/{video_name}").resolve()
+        for i, part in enumerate(real.parts):
+            if _USB_IFACE_RE.match(part):  # USB interface, not PCI addr like "0000:01:00.0"
+                return str(Path(*real.parts[:i]))
+        return None
+    except Exception:
+        return None
+
+
+def _has_video_capture_cap(video_name: str) -> bool:
+    """Check VIDEO_CAPTURE capability via ioctl — works even when device is in use."""
+    try:
+        fd = os.open(f"/dev/{video_name}", os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            buf = bytearray(104)
+            fcntl.ioctl(fd, _VIDIOC_QUERYCAP, buf)
+            device_caps = struct.unpack_from("<I", buf, 88)[0]
+            return bool(device_caps & _V4L2_CAP_VIDEO_CAPTURE)
+        finally:
+            os.close(fd)
+    except Exception:
+        return False
+
+
 def discover_camera_names(max_cameras: int = MAX_CAMERAS) -> list[str]:
     devices = sorted(
         (Path(p) for p in glob.glob("/dev/video*")),
         key=lambda p: int(p.name[5:]) if p.name.startswith("video") and p.name[5:].isdigit() else 9999,
     )
-    return [p.name for p in devices[:max_cameras] if p.exists()]
+    seen_usb: set[str] = set()
+    result: list[str] = []
+    for dev in devices:
+        if not dev.exists():
+            continue
+        key = _usb_parent_key(dev.name)
+        if key is None:  # not a USB device (e.g. bcm2835 encoder)
+            continue
+        if not _has_video_capture_cap(dev.name):
+            continue
+        if key in seen_usb:
+            continue
+        seen_usb.add(key)
+        result.append(dev.name)
+        if len(result) >= max_cameras:
+            break
+    return result
 
 
 def _start_mediamtx() -> Optional[subprocess.Popen]:
@@ -64,6 +115,8 @@ def _start_ffmpeg(dev_name: str) -> subprocess.Popen:
     dev = f"/dev/{dev_name}"
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-fflags", "nobuffer",
+        "-flags", "low_delay",
         "-f", "v4l2", "-input_format", "mjpeg",
         "-framerate", "15",
         "-video_size", "1280x720",
@@ -72,9 +125,9 @@ def _start_ffmpeg(dev_name: str) -> subprocess.Popen:
     if H264_ENCODER == "libx264":
         cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency"]
     else:
-        cmd += ["-c:v", H264_ENCODER]
+        cmd += ["-c:v", H264_ENCODER, "-vf", "format=yuv420p"]
     cmd += [
-        "-b:v", "800k", "-g", "30",
+        "-b:v", "800k", "-g", "5",
         "-f", "rtsp", "-rtsp_transport", "tcp",
         f"rtsp://127.0.0.1:{MEDIAMTX_RTSP_PORT}/{dev_name}",
     ]
