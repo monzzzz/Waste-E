@@ -11,4 +11,5 @@ dependencies = [
     "opi-gpio>=0.5.2",
     "pynmea2>=1.19.0",
     "pyserial>=3.5",
+    "smbus2>=0.4.3",
 ]
