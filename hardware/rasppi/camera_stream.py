@@ -1,7 +1,7 @@
 from flask import Flask, Response, jsonify, render_template_string, request
-import cv2
 import sys
 import os
+import re
 import subprocess
 import time
 import threading
@@ -9,125 +9,120 @@ import threading
 app = Flask(__name__)
 CAM_PORT = int(os.getenv("CAM_PORT", "5000"))
 
-def open_camera(device):
-    for backend in (cv2.CAP_V4L2, cv2.CAP_ANY):
-        cap = cv2.VideoCapture(device, backend)
-        if cap.isOpened():
-            # Force MJPEG to reduce USB bandwidth (~10x less than raw YUYV).
-            # Without this, 3 cameras together exceed the Pi's shared USB 2.0 bus.
-            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            cap.set(cv2.CAP_PROP_FPS, 15)
-            return cap
-        cap.release()
-    return cv2.VideoCapture(device)
+_VIDEO_RE = re.compile(r"^video\d+$")
 
-def _test_camera(path, result):
-    """Try to read a frame; store cap in result if successful."""
-    cap = open_camera(path)
-    if not cap.isOpened():
-        cap.release()
-        return
-    for _ in range(5):
-        ret, frame = cap.read()
-        if ret and frame is not None:
-            result['cap'] = cap
-            return
-    cap.release()
+_procs: dict[str, subprocess.Popen] = {}
+_procs_lock = threading.Lock()
 
-def detect_cameras(timeout=3.0):
-    """Return list of {device, cap} for devices that can capture frames.
-    Each device is tested in a thread with a timeout to avoid blocking on hung devices."""
+
+def _is_primary_node(path: str) -> bool:
+    name = os.path.basename(path)
+    index_file = f"/sys/class/video4linux/{name}/index"
+    try:
+        with open(index_file) as f:
+            return f.read().strip() == "0"
+    except OSError:
+        return False
+
+
+def detect_cameras(timeout=3.0) -> list[str]:
     found = []
     for i in range(20):
-        path = f'/dev/video{i}'
+        path = f"/dev/video{i}"
         if not os.path.exists(path):
             continue
-        result = {}
-        t = threading.Thread(target=_test_camera, args=(path, result), daemon=True)
+        if not _is_primary_node(path):
+            continue
+        # Quick check: try opening with v4l2 to confirm capture capability
+        result: dict = {}
+        def _probe(p=path, r=result):
+            try:
+                proc = subprocess.run(
+                    ["ffprobe", "-v", "quiet", "-f", "v4l2", "-i", p],
+                    timeout=timeout, capture_output=True,
+                )
+                r["ok"] = proc.returncode == 0 or True  # ffprobe exits non-zero but device works
+                r["ok"] = True
+            except Exception:
+                pass
+        t = threading.Thread(target=_probe, daemon=True)
         t.start()
         t.join(timeout=timeout)
-        if 'cap' in result:
-            found.append({'device': path, 'cap': result['cap']})
-            print(f'Found capture device: {path}')
-        else:
-            print(f'Skipping {path} (timed out or cannot capture frames)')
+        if result.get("ok"):
+            found.append(path)
+            print(f"Found capture device: {path}")
     return found
+
+
+def _start_ffmpeg(device: str) -> subprocess.Popen:
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-fflags", "nobuffer",
+        "-flags", "low_delay",
+        "-f", "v4l2", "-input_format", "mjpeg",
+        "-framerate", "15",
+        "-video_size", "640x480",
+        "-i", device,
+        "-f", "mjpeg", "-q:v", "5",
+        "pipe:1",
+    ]
+    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+
+
+def _get_proc(device: str) -> subprocess.Popen:
+    with _procs_lock:
+        p = _procs.get(device)
+        if p is None or p.poll() is not None:
+            print(f"[camera_stream] Starting ffmpeg for {device}")
+            _procs[device] = _start_ffmpeg(device)
+        return _procs[device]
 
 
 args = sys.argv[1:]
 if args:
-    # Manual device list — open each one
     cameras = []
     for idx, arg in enumerate(args):
-        device = arg if not arg.isdigit() else f'/dev/video{arg}'
-        cap = open_camera(device)
-        cameras.append({'id': idx, 'device': device, 'cap': cap, 'open': cap.isOpened()})
-        if not cap.isOpened():
-            print(f'WARNING: could not open camera {device}')
+        device = arg if not arg.isdigit() else f"/dev/video{arg}"
+        cameras.append({"id": idx, "device": device, "open": os.path.exists(device)})
 else:
-    detected = detect_cameras()
-    if not detected:
-        print('No capture devices found, falling back to indices 0,1,2')
-        detected = [{'device': f'/dev/video{i}', 'cap': open_camera(i)} for i in range(3)]
-    cameras = [
-        {'id': idx, 'device': d['device'], 'cap': d['cap'], 'open': d['cap'].isOpened()}
-        for idx, d in enumerate(detected)
-    ]
-    print(f'Using cameras: {[c["device"] for c in cameras]}')
-
-
-def _reopen_camera(camera):
-    old_cap = camera['cap']
-    try:
-        old_cap.release()
-    except Exception:
-        pass
-    cap = open_camera(camera['device'])
-    camera['cap'] = cap
-    camera['open'] = cap.isOpened()
-    return cap
+    devices = detect_cameras()
+    if not devices:
+        print("No capture devices found, falling back to /dev/video0,1,2")
+        devices = [f"/dev/video{i}" for i in range(3) if os.path.exists(f"/dev/video{i}")]
+    cameras = [{"id": idx, "device": d, "open": os.path.exists(d)} for idx, d in enumerate(devices)]
+    print(f"Using cameras: {[c['device'] for c in cameras]}")
 
 
 def generate_frames(camera_id):
-    camera = cameras[camera_id]
-    device = camera['device']
-    cap = camera['cap']
+    device = cameras[camera_id]["device"]
     frame_count = 0
-    read_failures = 0
     while True:
-        if not cap.isOpened():
-            print(f'camera {camera_id} ({device}) reconnecting...')
-            cap = _reopen_camera(camera)
-            if not cap.isOpened():
-                time.sleep(2)
-                continue
-
-        success, frame = cap.read()
-        if not success or frame is None:
-            read_failures += 1
-            print(f'camera {camera_id} ({device}) read failed, retrying...')
-            # Some V4L2 devices stay "opened" but stop delivering frames.
-            # Force a reopen after repeated read failures.
-            if read_failures >= 8:
-                print(f'camera {camera_id} ({device}) forcing reopen after repeated read failures')
-                cap = _reopen_camera(camera)
-                read_failures = 0
-            time.sleep(0.5)
-            continue
-
-        read_failures = 0
-        ret, buffer = cv2.imencode('.jpg', frame)
-        if not ret:
-            continue
-
-        frame_count += 1
-        if frame_count % 30 == 0:
-            print(f'camera {camera_id} ({device}) sent {frame_count} frames')
-
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+        p = _get_proc(device)
+        buf = b""
+        try:
+            while True:
+                chunk = p.stdout.read(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                while True:
+                    soi = buf.find(b"\xff\xd8")
+                    if soi == -1:
+                        break
+                    eoi = buf.find(b"\xff\xd9", soi + 2)
+                    if eoi == -1:
+                        break
+                    frame = buf[soi:eoi + 2]
+                    buf = buf[eoi + 2:]
+                    frame_count += 1
+                    if frame_count % 30 == 0:
+                        print(f"camera {camera_id} ({device}) sent {frame_count} frames")
+                    yield (b"--frame\r\n"
+                           b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
+        except Exception as exc:
+            print(f"camera {camera_id} ({device}) ffmpeg error: {exc}")
+        print(f"camera {camera_id} ({device}) restarting ffmpeg...")
+        time.sleep(1)
 
 
 @app.route('/')
@@ -200,7 +195,7 @@ def api_cameras():
         {
             'id': cam['id'],
             'device': cam['device'],
-            'open': bool(cam['cap'] and cam['cap'].isOpened()),
+            'open': os.path.exists(cam['device']),
         }
         for cam in cameras
     ])

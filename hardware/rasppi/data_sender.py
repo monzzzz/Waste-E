@@ -36,7 +36,7 @@ _CAM_CACHE_TTL = 10.0
 MEDIAMTX_BIN = os.getenv("MEDIAMTX_BIN", str(Path(__file__).parent / "mediamtx"))
 MEDIAMTX_RTSP_PORT = int(os.getenv("MEDIAMTX_RTSP_PORT", "8554"))
 MEDIAMTX_WEBRTC_PORT = int(os.getenv("MEDIAMTX_WEBRTC_PORT", "8889"))
-H264_ENCODER = os.getenv("H264_ENCODER", "h264_v4l2m2m")
+H264_ENCODER = os.getenv("H264_ENCODER", "libx264")
 _WEBRTC_MODE = os.path.isfile(MEDIAMTX_BIN) and os.access(MEDIAMTX_BIN, os.X_OK)
 
 _CAM_PROCS: dict[str, subprocess.Popen] = {}
@@ -119,7 +119,7 @@ def _start_ffmpeg(dev_name: str) -> subprocess.Popen:
         "-flags", "low_delay",
         "-f", "v4l2", "-input_format", "mjpeg",
         "-framerate", "15",
-        "-video_size", "1280x720",
+        "-video_size", "640x480",
         "-i", dev,
     ]
     if H264_ENCODER == "libx264":
