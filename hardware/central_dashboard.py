@@ -484,6 +484,35 @@ def api_drive() -> Response:
     return jsonify({"error": f"drive proxy failed: {last_error}", "targets": attempted}), 502
 
 
+@app.route("/api/speed", methods=["POST"])
+def api_speed() -> Response:
+    payload = request.get_json(silent=True) or {}
+    try:
+        speed = max(0.0, min(1.0, float(payload.get("speed", 1.0))))
+    except (TypeError, ValueError):
+        return jsonify({"error": "speed must be 0.0–1.0"}), 400
+
+    with _device_lock:
+        info = _devices.get("orangepi")
+        drive_urls = _make_drive_urls(info) if info else []
+
+    speed_urls = [u.replace("/api/drive", "/api/speed") for u in drive_urls]
+    if not speed_urls:
+        return jsonify({"error": "orangepi not registered"}), 404
+
+    data = json.dumps({"speed": speed}).encode()
+    for url in speed_urls:
+        try:
+            req = urllib.request.Request(url, data=data,
+                                         headers={"Content-Type": "application/json"},
+                                         method="POST")
+            with urllib.request.urlopen(req, timeout=3.0):
+                return jsonify({"ok": True, "speed": speed})
+        except Exception:
+            continue
+    return jsonify({"error": "speed proxy failed"}), 502
+
+
 @app.route("/api/whep/<device>/<path:stream>", methods=["POST", "OPTIONS"])
 def api_whep_proxy(device: str, stream: str) -> Response:
     if request.method == "OPTIONS":
@@ -834,6 +863,31 @@ html,body{
   letter-spacing:.06em;
   text-align:center;
 }
+#speed-wrap{
+  background:rgba(17,25,43,.75);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:8px 12px;
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+}
+#speed-labels{
+  display:flex;
+  justify-content:space-between;
+  font-size:10px;
+  font-weight:700;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+#speed-labels span:first-child{color:var(--muted)}
+#speed-pct{color:var(--cyan);font-family:var(--mono)}
+#speed-slider{
+  width:100%;
+  accent-color:var(--cyan);
+  cursor:pointer;
+  height:4px;
+}
 #motor-meta{
   margin-top:auto;
   background:rgba(17,25,43,.75);
@@ -909,30 +963,70 @@ html,body{
 .cam-card.down .cam-down{display:flex}
 
 #enc-panel{grid-area:encoder}
-#enc-wrap{padding:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.enc-card{
+#enc-wrap{padding:10px;display:flex;flex-direction:column;gap:8px;overflow:hidden}
+.enc-wheels-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;flex-shrink:0}
+.enc-wheel-block{
   background:rgba(17,25,43,.75);
   border:1px solid var(--border);
   border-radius:10px;
-  padding:10px;
+  padding:8px;
   display:flex;
-  flex-direction:column;
-  gap:2px;
+  gap:8px;
+  align-items:center;
 }
-.enc-card .lbl{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-weight:700}
-.enc-card .val{font-family:var(--mono);font-size:20px;font-weight:700;color:var(--text)}
-.enc-card .unit{font-size:10px;color:var(--muted)}
-.enc-card.cyan .val{color:var(--cyan)}
-.enc-card.green .val{color:var(--emerald)}
-#encoder-note{
-  grid-column:1/-1;
-  margin-top:2px;
+.enc-wheel-vals{display:flex;flex-direction:column;gap:4px;flex:1;min-width:0}
+.enc-val-row{display:flex;flex-direction:column;gap:1px}
+.enc-val-row .lbl{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-weight:700}
+.enc-val-row .val{font-family:var(--mono);font-size:16px;font-weight:700;color:var(--text)}
+.enc-val-row .unit{font-size:9px;color:var(--muted)}
+.enc-val-row.cyan .val{color:var(--cyan)}
+.enc-val-row.green .val{color:var(--emerald)}
+#enc-dist-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  background:rgba(17,25,43,.75);
   border:1px solid var(--border);
   border-radius:10px;
-  padding:9px 12px;
+  padding:7px 12px;
+  flex-shrink:0;
+}
+#enc-dist-total{display:flex;align-items:baseline;gap:5px}
+#enc-dist-total .lbl{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;font-weight:700}
+#enc-dist-total .val{font-family:var(--mono);font-size:18px;font-weight:700;color:var(--amber)}
+#enc-dist-total .unit{font-size:10px;color:var(--muted)}
+#enc-reset-btn{
+  font-size:10px;font-weight:700;letter-spacing:.06em;
+  padding:3px 10px;border-radius:6px;cursor:pointer;
+  background:#0f1928;border:1px solid var(--border-hi);
+  color:var(--muted);transition:all .12s;
+}
+#enc-reset-btn:hover{border-color:var(--amber);color:var(--amber)}
+#rpm-graph-wrap{
+  background:rgba(17,25,43,.75);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:8px 10px 6px;
+  flex:1;
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+}
+.rpm-graph-legend{display:flex;align-items:center;gap:8px;font-size:9px;color:var(--muted);flex-shrink:0}
+.rpm-legend-item{display:flex;align-items:center;gap:4px}
+.rpm-legend-dot{width:14px;height:3px;border-radius:2px;display:inline-block}
+.rpm-legend-dot.cyan{background:var(--cyan)}
+.rpm-legend-dot.amber{background:var(--amber)}
+#rpm-graph{flex:1;min-height:0;width:100%;display:block}
+#encoder-note{
+  flex-shrink:0;
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:7px 12px;
   background:rgba(17,25,43,.55);
   color:var(--muted);
-  font-size:11px;
+  font-size:10px;
   line-height:1.45;
   display:flex;
   align-items:center;
@@ -1127,6 +1221,14 @@ html,body{
       </div>
       <div style="font-size:10px;color:var(--muted);text-align:center;letter-spacing:.06em">WASD / Arrow keys</div>
 
+      <div id="speed-wrap">
+        <div id="speed-labels">
+          <span>SPEED</span>
+          <span id="speed-pct">100%</span>
+        </div>
+        <input type="range" id="speed-slider" min="0" max="100" value="100" step="5">
+      </div>
+
       <div id="motor-meta">
         <div class="meta-row"><span class="k">Controller</span><span class="v status-val offline" id="m-online">offline</span></div>
         <div class="meta-row"><span class="k">Last Action</span><span class="v" id="m-last-action">stop</span></div>
@@ -1154,10 +1256,63 @@ html,body{
       <h2>Motor Encoder Data</h2>
     </div>
     <div id="enc-wrap">
-      <div class="enc-card cyan"><div class="lbl">Left RPM</div><div class="val" id="e-left-rpm">-</div><div class="unit">rpm</div></div>
-      <div class="enc-card cyan"><div class="lbl">Right RPM</div><div class="val" id="e-right-rpm">-</div><div class="unit">rpm</div></div>
-      <div class="enc-card green"><div class="lbl">Left Angle</div><div class="val" id="e-left-angle">-</div><div class="unit">deg</div></div>
-      <div class="enc-card green"><div class="lbl">Right Angle</div><div class="val" id="e-right-angle">-</div><div class="unit">deg</div></div>
+      <div class="enc-wheels-row">
+        <div class="enc-wheel-block">
+          <canvas id="wheel-left" width="70" height="70"></canvas>
+          <div class="enc-wheel-vals">
+            <div class="enc-val-row cyan">
+              <div class="lbl">Left RPM</div>
+              <div class="val" id="e-left-rpm">-</div>
+              <div class="unit">rpm</div>
+            </div>
+            <div class="enc-val-row green">
+              <div class="lbl">Left Angle</div>
+              <div class="val" id="e-left-angle">-</div>
+              <div class="unit">deg</div>
+            </div>
+            <div class="enc-val-row" style="color:var(--amber)">
+              <div class="lbl">Left Dist</div>
+              <div class="val" id="e-left-dist" style="color:var(--amber)">-</div>
+              <div class="unit">m</div>
+            </div>
+          </div>
+        </div>
+        <div class="enc-wheel-block">
+          <canvas id="wheel-right" width="70" height="70"></canvas>
+          <div class="enc-wheel-vals">
+            <div class="enc-val-row cyan">
+              <div class="lbl">Right RPM</div>
+              <div class="val" id="e-right-rpm">-</div>
+              <div class="unit">rpm</div>
+            </div>
+            <div class="enc-val-row green">
+              <div class="lbl">Right Angle</div>
+              <div class="val" id="e-right-angle">-</div>
+              <div class="unit">deg</div>
+            </div>
+            <div class="enc-val-row" style="color:var(--amber)">
+              <div class="lbl">Right Dist</div>
+              <div class="val" id="e-right-dist" style="color:var(--amber)">-</div>
+              <div class="unit">m</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="enc-dist-row">
+        <div id="enc-dist-total">
+          <span class="lbl">Total</span>
+          <span class="val" id="e-total-dist">-</span>
+          <span class="unit">m</span>
+        </div>
+        <button id="enc-reset-btn" onclick="resetEncDist()">Reset</button>
+      </div>
+      <div id="rpm-graph-wrap">
+        <div class="rpm-graph-legend">
+          <div class="rpm-legend-item"><span class="rpm-legend-dot cyan"></span><span>Left RPM</span></div>
+          <div class="rpm-legend-item"><span class="rpm-legend-dot amber"></span><span>Right RPM</span></div>
+        </div>
+        <canvas id="rpm-graph"></canvas>
+      </div>
       <div id="encoder-note"><span>⚙</span><span id="encoder-note-text">Waiting for OrangePi encoder telemetry...</span></div>
     </div>
   </section>
@@ -1175,6 +1330,8 @@ const compassCanvas = document.getElementById('compass-canvas');
 const compassCtx = compassCanvas.getContext('2d');
 const birdCanvas = document.getElementById('bird-canvas');
 const birdCtx = birdCanvas.getContext('2d');
+const wheelLeftCanvas = document.getElementById('wheel-left');
+const wheelRightCanvas = document.getElementById('wheel-right');
 
 let map = null;
 let marker = null;
@@ -1185,6 +1342,207 @@ let cameraSignature = '';
 let currentAction = 'stop';
 let sendingDrive = false;
 const _peerConns = {};
+
+// Encoder wheel animation state
+let _leftRpm = 0;
+let _rightRpm = 0;
+let _leftWheelAngle = 0;
+let _rightWheelAngle = 0;
+let _lastWheelTs = null;
+
+// RPM history (stores last 60 samples, updated at SEND_HZ rate)
+const RPM_HISTORY_LEN = 60;
+let _leftRpmHistory = new Array(RPM_HISTORY_LEN).fill(null);
+let _rightRpmHistory = new Array(RPM_HISTORY_LEN).fill(null);
+
+// Distance odometry: baseline subtracted for reset
+let _distBaseline = { left: null, right: null };
+function resetEncDist() {
+  // Read current raw values from the last encoder data
+  const bl = parseFloat(document.getElementById('e-left-dist').dataset.raw);
+  const br = parseFloat(document.getElementById('e-right-dist').dataset.raw);
+  _distBaseline.left  = isNaN(bl) ? null : bl;
+  _distBaseline.right = isNaN(br) ? null : br;
+}
+
+function _drawWheel(canvas, angleRad, rpm){
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+  const cx = w / 2;
+  const cy = h / 2;
+  const outerR = Math.min(w, h) / 2 - 3;
+  const innerR = outerR * 0.28;
+  const moving = Math.abs(rpm) > 0.5;
+
+  ctx.clearRect(0, 0, w, h);
+
+  // Outer tyre ring
+  const tyreGrad = ctx.createRadialGradient(cx, cy, outerR * 0.72, cx, cy, outerR);
+  tyreGrad.addColorStop(0, '#1a2b46');
+  tyreGrad.addColorStop(1, '#0d1728');
+  ctx.beginPath();
+  ctx.arc(cx, cy, outerR, 0, Math.PI * 2);
+  ctx.fillStyle = tyreGrad;
+  ctx.fill();
+  ctx.strokeStyle = moving ? '#00d2ff' : '#233252';
+  ctx.lineWidth = moving ? 2 : 1.5;
+  if (moving){ ctx.shadowColor = '#00d2ff'; ctx.shadowBlur = 6; }
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Rim circle
+  ctx.beginPath();
+  ctx.arc(cx, cy, outerR * 0.72, 0, Math.PI * 2);
+  ctx.fillStyle = '#0f1e35';
+  ctx.fill();
+  ctx.strokeStyle = moving ? '#2a4a7f' : '#1d2e47';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Spokes (5-spoke, rotate with angle)
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angleRad);
+  const spokeCount = 5;
+  const spokeColor = moving ? '#00d2ff' : '#2a4070';
+  for (let i = 0; i < spokeCount; i++){
+    const a = (i / spokeCount) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a) * innerR * 1.1, Math.sin(a) * innerR * 1.1);
+    ctx.lineTo(Math.cos(a) * outerR * 0.68, Math.sin(a) * outerR * 0.68);
+    ctx.strokeStyle = spokeColor;
+    ctx.lineWidth = moving ? 2.5 : 1.5;
+    if (moving){ ctx.shadowColor = '#00d2ff'; ctx.shadowBlur = 4; }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+  ctx.restore();
+
+  // Hub
+  ctx.beginPath();
+  ctx.arc(cx, cy, innerR, 0, Math.PI * 2);
+  ctx.fillStyle = moving ? '#00d2ff33' : '#131f35';
+  ctx.fill();
+  ctx.strokeStyle = moving ? '#00d2ff' : '#2a4070';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Center dot
+  ctx.beginPath();
+  ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+  ctx.fillStyle = moving ? '#00d2ff' : '#3a5280';
+  ctx.fill();
+
+  // RPM label below wheel
+  ctx.fillStyle = moving ? '#00d2ff' : '#4a6090';
+  ctx.font = 'bold 9px JetBrains Mono';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  const rpmStr = Math.abs(rpm) < 0.1 ? 'STOP' : (rpm > 0 ? '+' : '') + rpm.toFixed(0);
+  ctx.fillText(rpmStr, cx, h - 1);
+}
+
+function _wheelAnimLoop(ts){
+  if (_lastWheelTs === null) _lastWheelTs = ts;
+  const dt = Math.min((ts - _lastWheelTs) / 1000, 0.1);
+  _lastWheelTs = ts;
+
+  // deg/s = rpm * 6; convert to radians
+  _leftWheelAngle  += (_leftRpm  * 6 * dt) * Math.PI / 180;
+  _rightWheelAngle += (_rightRpm * 6 * dt) * Math.PI / 180;
+
+  _drawWheel(wheelLeftCanvas,  _leftWheelAngle,  _leftRpm);
+  _drawWheel(wheelRightCanvas, _rightWheelAngle, _rightRpm);
+
+  requestAnimationFrame(_wheelAnimLoop);
+}
+requestAnimationFrame(_wheelAnimLoop);
+
+function _drawRpmGraph(){
+  const canvas = document.getElementById('rpm-graph');
+  const wrap = document.getElementById('rpm-graph-wrap');
+  if (!canvas || !wrap) return;
+  // Resize canvas to match display size
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const cw = Math.max(1, Math.floor(rect.width));
+  const ch = Math.max(1, Math.floor(rect.height));
+  if (canvas.width !== cw * dpr || canvas.height !== ch * dpr){
+    canvas.width = cw * dpr;
+    canvas.height = ch * dpr;
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const w = cw;
+  const h = ch;
+
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = 'transparent';
+  ctx.fillRect(0, 0, w, h);
+
+  const validL = _leftRpmHistory.filter(v => v !== null);
+  const validR = _rightRpmHistory.filter(v => v !== null);
+  if (validL.length < 2 && validR.length < 2){
+    ctx.fillStyle = '#3a4f72';
+    ctx.font = '10px JetBrains Mono';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('No data yet', w / 2, h / 2);
+    return;
+  }
+
+  const allVals = [...validL, ...validR].map(Math.abs);
+  const maxRpm = Math.max(10, ...allVals) * 1.15;
+
+  const pad = { top: 4, bottom: 4, left: 2, right: 2 };
+  const gw = w - pad.left - pad.right;
+  const gh = h - pad.top - pad.bottom;
+
+  // Horizontal grid lines
+  const gridLines = 3;
+  for (let i = 0; i <= gridLines; i++){
+    const y = pad.top + (gh * i / gridLines);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(pad.left + gw, y);
+    ctx.strokeStyle = '#1b2740';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    if (i < gridLines){
+      const label = (maxRpm * (1 - i / gridLines)).toFixed(0);
+      ctx.fillStyle = '#3a4f72';
+      ctx.font = '8px JetBrains Mono';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText(label, pad.left + 1, y + 1);
+    }
+  }
+
+  function drawLine(history, color){
+    const n = history.length;
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i < n; i++){
+      const v = history[i];
+      if (v === null) continue;
+      const x = pad.left + (i / (n - 1)) * gw;
+      const y = pad.top + gh - (Math.abs(v) / maxRpm) * gh;
+      if (!started){ ctx.moveTo(x, y); started = true; }
+      else { ctx.lineTo(x, y); }
+    }
+    if (started){
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      ctx.stroke();
+    }
+  }
+
+  drawLine(_leftRpmHistory,  '#00d2ff');
+  drawLine(_rightRpmHistory, '#f59e0b');
+}
 
 async function _startWhep(camId, whepUrl) {
   if (_peerConns[camId]) { try { _peerConns[camId].close(); } catch(_){} }
@@ -1417,67 +1775,133 @@ function drawBirdEye(heading, roll, pitch){
   const w = canvas.width;
   const h = canvas.height;
   const cx = w / 2;
-  const cy = h / 2;
+  const cy = (h - 30) / 2;
 
   ctx.clearRect(0, 0, w, h);
 
+  // Grid background
+  ctx.strokeStyle = '#1b2740';
+  ctx.lineWidth = 1;
   for (let x = 10; x < w; x += 20){
-    ctx.strokeStyle = '#1b2740';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(x, 6);
-    ctx.lineTo(x, h - 6);
-    ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x, 4); ctx.lineTo(x, h - 34); ctx.stroke();
   }
-  for (let y = 10; y < h; y += 20){
-    ctx.beginPath();
-    ctx.moveTo(6, y);
-    ctx.lineTo(w - 6, y);
-    ctx.stroke();
+  for (let y = 10; y < h - 30; y += 20){
+    ctx.beginPath(); ctx.moveTo(4, y); ctx.lineTo(w - 4, y); ctx.stroke();
   }
 
   ctx.save();
-  const yaw = (Number(heading) || 0) * Math.PI / 180;
   ctx.translate(cx, cy);
-  ctx.rotate(yaw);
+  ctx.rotate((Number(heading) || 0) * Math.PI / 180);
 
-  ctx.fillStyle = '#0b1c31';
+  // --- Car body ---
+  ctx.fillStyle = '#0e1e36';
   ctx.strokeStyle = '#00d2ff';
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.roundRect(-22, -34, 44, 68, 8);
+  ctx.roundRect(-18, -32, 36, 64, 7);
   ctx.fill();
   ctx.stroke();
 
-  ctx.fillStyle = '#7c3aed';
-  ctx.fillRect(-15, -18, 30, 36);
-
-  ctx.fillStyle = '#00d2ff';
+  // Roof / cabin area (lighter tint)
+  ctx.fillStyle = '#142540';
   ctx.beginPath();
-  ctx.moveTo(0, -42);
-  ctx.lineTo(-8, -31);
-  ctx.lineTo(8, -31);
+  ctx.roundRect(-13, -16, 26, 30, 4);
+  ctx.fill();
+
+  // Windshield (front top)
+  ctx.fillStyle = '#00d2ff22';
+  ctx.strokeStyle = '#00d2ff88';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(-11, -16);
+  ctx.lineTo(11, -16);
+  ctx.lineTo(13, -8);
+  ctx.lineTo(-13, -8);
   ctx.closePath();
   ctx.fill();
+  ctx.stroke();
+
+  // Rear window
+  ctx.fillStyle = '#00d2ff18';
+  ctx.beginPath();
+  ctx.moveTo(-11, 14);
+  ctx.lineTo(11, 14);
+  ctx.lineTo(13, 7);
+  ctx.lineTo(-13, 7);
+  ctx.closePath();
+  ctx.fill();
+
+  // 4 wheels
+  const wheelW = 7, wheelH = 14, wheelR = 3;
+  const wheelPositions = [[-22, -22], [22, -22], [-22, 18], [22, 18]];
+  wheelPositions.forEach(([wx, wy]) => {
+    ctx.fillStyle = '#1d2e4a';
+    ctx.strokeStyle = '#3a5280';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const wl = wx - wheelW / 2, wt = wy - wheelH / 2;
+    ctx.roundRect(wl, wt, wheelW, wheelH, wheelR);
+    ctx.fill();
+    ctx.stroke();
+    // Wheel hub dot
+    ctx.beginPath();
+    ctx.arc(wx, wy, 2, 0, Math.PI * 2);
+    ctx.fillStyle = '#4a6898';
+    ctx.fill();
+  });
+
+  // Front direction arrow
+  ctx.fillStyle = '#00d2ff';
+  ctx.shadowColor = '#00d2ff';
+  ctx.shadowBlur = 6;
+  ctx.beginPath();
+  ctx.moveTo(0, -38);
+  ctx.lineTo(-5, -30);
+  ctx.lineTo(5, -30);
+  ctx.closePath();
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
   ctx.restore();
 
+  // --- Roll / Pitch bars below car ---
+  const bY = h - 26;
+  const barW = w - 20;
   const rollPct = Math.max(-1, Math.min(1, (Number(roll) || 0) / 45));
   const pitchPct = Math.max(-1, Math.min(1, (Number(pitch) || 0) / 45));
 
+  // Track backgrounds
   ctx.fillStyle = '#1a2744';
-  ctx.fillRect(10, h - 18, w - 20, 8);
-  ctx.fillRect(10, h - 32, w - 20, 8);
+  ctx.beginPath(); ctx.roundRect(10, bY, barW, 7, 3); ctx.fill();
+  ctx.beginPath(); ctx.roundRect(10, bY + 11, barW, 7, 3); ctx.fill();
+
+  // Fill bars (from center)
+  const mid = 10 + barW / 2;
+  const rollFill = rollPct * (barW / 2);
+  const pitchFill = pitchPct * (barW / 2);
 
   ctx.fillStyle = '#00d2ff';
-  ctx.fillRect(w / 2, h - 18, rollPct * (w / 2 - 10), 8);
+  ctx.beginPath();
+  ctx.roundRect(rollFill >= 0 ? mid : mid + rollFill, bY, Math.abs(rollFill), 7, 2);
+  ctx.fill();
 
   ctx.fillStyle = '#22c55e';
-  ctx.fillRect(w / 2, h - 32, pitchPct * (w / 2 - 10), 8);
+  ctx.beginPath();
+  ctx.roundRect(pitchFill >= 0 ? mid : mid + pitchFill, bY + 11, Math.abs(pitchFill), 7, 2);
+  ctx.fill();
+
+  // Center tick
+  ctx.strokeStyle = '#4a6898';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(mid, bY - 1); ctx.lineTo(mid, bY + 8); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(mid, bY + 10); ctx.lineTo(mid, bY + 19); ctx.stroke();
 
   ctx.fillStyle = '#8da2c8';
   ctx.font = '9px JetBrains Mono';
-  ctx.fillText('ROLL', 10, h - 20);
-  ctx.fillText('PITCH', 10, h - 34);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText('R', 10, bY - 2);
+  ctx.fillText('P', 10, bY + 9);
 }
 
 function renderCameras(cameras){
@@ -1686,10 +2110,32 @@ function applySummary(data){
   document.getElementById('m-updated').textContent = motor.last_ts ? new Date(motor.last_ts * 1000).toLocaleTimeString() : '-';
 
   const enc = data.encoders || {};
-  document.getElementById('e-left-rpm').textContent = fmt(enc.left_rpm, 2);
-  document.getElementById('e-right-rpm').textContent = fmt(enc.right_rpm, 2);
-  document.getElementById('e-left-angle').textContent = fmt(enc.left_angle, 2);
-  document.getElementById('e-right-angle').textContent = fmt(enc.right_angle, 2);
+  document.getElementById('e-left-rpm').textContent = fmt(enc.left_rpm, 1);
+  document.getElementById('e-right-rpm').textContent = fmt(enc.right_rpm, 1);
+  document.getElementById('e-left-angle').textContent = fmt(enc.left_angle, 1);
+  document.getElementById('e-right-angle').textContent = fmt(enc.right_angle, 1);
+
+  // Distance (with client-side baseline for reset)
+  const rawL = enc.left_dist_m;
+  const rawR = enc.right_dist_m;
+  const elL = document.getElementById('e-left-dist');
+  const elR = document.getElementById('e-right-dist');
+  const elT = document.getElementById('e-total-dist');
+  if (rawL !== null && rawL !== undefined) {
+    elL.dataset.raw = rawL;
+    const dL = rawL - (_distBaseline.left ?? rawL);
+    elL.textContent = dL.toFixed(3);
+  }
+  if (rawR !== null && rawR !== undefined) {
+    elR.dataset.raw = rawR;
+    const dR = rawR - (_distBaseline.right ?? rawR);
+    elR.textContent = dR.toFixed(3);
+  }
+  if (rawL !== null && rawR !== undefined && rawL !== undefined && rawR !== null) {
+    const dL = rawL - (_distBaseline.left ?? rawL);
+    const dR = rawR - (_distBaseline.right ?? rawR);
+    elT.textContent = ((dL + dR) / 2).toFixed(3);
+  }
 
   const hasEncoder = ['left_rpm', 'right_rpm', 'left_angle', 'right_angle']
     .some((k) => enc[k] !== null && enc[k] !== undefined);
@@ -1697,6 +2143,13 @@ function applySummary(data){
   if (hasEncoder){
     const lr = Number(enc.left_rpm || 0);
     const rr = Number(enc.right_rpm || 0);
+    _leftRpm  = lr;
+    _rightRpm = rr;
+    _leftRpmHistory.push(lr);
+    _rightRpmHistory.push(rr);
+    if (_leftRpmHistory.length  > RPM_HISTORY_LEN) _leftRpmHistory.shift();
+    if (_rightRpmHistory.length > RPM_HISTORY_LEN) _rightRpmHistory.shift();
+    _drawRpmGraph();
     const drift = (lr - rr).toFixed(2);
     if (encNoteText) encNoteText.textContent = `L/R drift: ${drift} rpm  ·  updated ${now.toLocaleTimeString()}`;
   } else {
@@ -1766,12 +2219,35 @@ function wireControls(){
     if (key === 'arrowright' || key === 'd') { sendDrive('right'); setActiveAction('right'); }
     if (key === ' ' || key === 'x') { sendDrive('stop'); setActiveAction('stop'); }
   });
+
+  const speedSlider = document.getElementById('speed-slider');
+  const speedPct    = document.getElementById('speed-pct');
+  let speedDebounce = null;
+
+  speedSlider.addEventListener('input', () => {
+    speedPct.textContent = speedSlider.value + '%';
+  });
+
+  speedSlider.addEventListener('change', () => {
+    clearTimeout(speedDebounce);
+    speedDebounce = setTimeout(async () => {
+      const speed = Number(speedSlider.value) / 100;
+      try {
+        await fetch('/api/speed', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ speed }),
+        });
+      } catch (_) {}
+    }, 80);
+  });
 }
 
 initMap();
 wireControls();
 drawCompass(0);
 drawBirdEye(0, 0, 0);
+window.addEventListener('resize', _drawRpmGraph);
 refresh();
 setInterval(refresh, 500);
 </script>

@@ -20,6 +20,7 @@ import copy
 import glob
 import http.client
 import json
+import math
 import os
 import re
 import subprocess
@@ -62,11 +63,35 @@ except Exception:
 GPS_PORT = os.getenv("GPS_PORT", "/dev/ttyS0")
 IMU_PORT = os.getenv("IMU_PORT", "/dev/ttyS6")
 CAM_PORT = int(os.getenv("CAM_PORT", "8890"))
-ROTATE_180 = {"/dev/video0", "/dev/video2", "/dev/video6"}
+ROTATE_180 = {"/dev/video6"}
 CAM_W, CAM_H, CAM_FPS, CAM_Q = 640, 480, 10, 2
 CAM_W_WEBRTC, CAM_H_WEBRTC = 640, 480
 SEND_HZ = 5.0
 DRIVE_ACTIONS = {"forward", "backward", "left", "right", "stop"}
+# Encoder is on the MOTOR shaft (before gearbox) — divide raw encoder RPM by this ratio
+# to get actual wheel RPM. Check the label on your gearbox (e.g. 30 for 1:30).
+ENCODER_GEAR_RATIO = float(os.getenv("ENCODER_GEAR_RATIO", "51.0"))
+# High-frequency encoder read rate — must be fast enough that the motor shaft
+# travels less than 180° per interval (aliasing limit).
+# At 150 Hz the limit is ~4500 RPM on the motor shaft before aliasing.
+# Lower than before because each loop now does ENC_MEDIAN_N reads.
+ENC_HZ = 100
+# Median filter: read the angle this many times per sample and take the middle
+# value. Rejects single corrupted I2C reads caused by motor noise.
+ENC_MEDIAN_N = 5
+ENC_WINDOW_SECS = 0.5  # sliding window for RPM averaging (seconds)
+# If the magnet is mounted upside-down on one side, set to -1 to flip the sign.
+ENC_LEFT_SIGN  = int(os.getenv("ENC_LEFT_SIGN",  "-1"))  # -1 or 1
+ENC_RIGHT_SIGN = int(os.getenv("ENC_RIGHT_SIGN", "1"))   # -1 or 1
+# Reject per-sample deltas that imply more than this many motor-shaft RPM
+# (caused by sleep jitter stretching the interval beyond 180°/sample limit).
+ENC_MAX_MOTOR_RPM = float(os.getenv("ENC_MAX_MOTOR_RPM", "8000"))
+# Set ENC_LOG=1 to write every raw encoder read to a CSV file for analysis.
+ENC_LOG = os.getenv("ENC_LOG", "0") == "1"
+ENC_LOG_DIR = os.getenv("ENC_LOG_DIR", str(Path(__file__).parent))
+# Wheel outer diameter in metres — used to compute odometry distance.
+# Measure the wheel and set WHEEL_DIAMETER_M=0.0XX via env var or change here.
+WHEEL_DIAMETER_M = float(os.getenv("WHEEL_DIAMETER_M", "0.11"))
 
 MEDIAMTX_BIN = os.getenv("MEDIAMTX_BIN", str(Path(__file__).parent / "mediamtx"))
 MEDIAMTX_RTSP_PORT = int(os.getenv("MEDIAMTX_RTSP_PORT", "8554"))
@@ -214,7 +239,8 @@ _sensor_state: dict = {
         "cal_accel": 0,
         "cal_mag": 0,
     },
-    "encoders": {"left_rpm": None, "right_rpm": None, "left_angle": None, "right_angle": None},
+    "encoders": {"left_rpm": None, "right_rpm": None, "left_angle": None, "right_angle": None,
+                 "left_dist_m": 0.0, "right_dist_m": 0.0},
     "motor_online": False,
     "motor_source": "none",
     "ts": 0.0,
@@ -315,13 +341,119 @@ def _read_json_from_url(url: str, timeout: float = 2.5) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-# ── sensor + motor threads ───────────────────────────────────────────────────
+# ── high-frequency encoder thread ────────────────────────────────────────────
+_enc_out_lock = threading.Lock()
+_enc_out: dict = {"left_rpm": None, "right_rpm": None,
+                  "left_angle": None, "right_angle": None,
+                  "left_dist_m": 0.0, "right_dist_m": 0.0}
+
+
+def _single_encoder_loop(bus_id: int, address: int, side: str,
+                          sign: int, angle_key: str, rpm_key: str):
+    """
+    Read one AS5600 encoder at ENC_HZ on its own thread.
+    Each encoder is on a separate I2C bus so both threads run truly in parallel.
+    """
+    from collections import deque
+
+    enc = None
+    if _HAS_ENC:
+        try:
+            enc = AS5600Encoder(bus_id=bus_id, address=address)
+            enc.open()
+            print(f"[ENC] {side} encoder opened (bus {bus_id}, addr {address:#04x})")
+        except Exception as e:
+            print(f"[ENC] {side} encoder: {e}")
+
+    cum = 0.0
+    prev_angle = None
+    win: deque = deque()
+    interval = 1.0 / ENC_HZ
+
+    log_file = None
+    if ENC_LOG:
+        log_path = Path(ENC_LOG_DIR) / f"enc_{side}.csv"
+        log_file = open(log_path, "w", buffering=1)  # line-buffered so data is visible immediately
+        log_file.write("mono_s,angle_deg,delta_deg,cumulative_deg,dt_ms,implied_motor_rpm,accepted,window_rpm\n")
+        print(f"[ENC] {side} logging to {log_path}")
+
+    while True:
+        t0 = time.monotonic()
+        if enc:
+            try:
+                reads = sorted(enc.read_angle_deg() for _ in range(ENC_MEDIAN_N))
+                angle = reads[ENC_MEDIAN_N // 2]  # median
+                result: dict = {angle_key: round(angle, 2)}
+
+                delta = 0.0
+                dt_sample = 0.0
+                implied = 0.0
+                accepted = False
+                window_rpm = None
+
+                if prev_angle is not None:
+                    delta = angle - prev_angle
+                    if delta > 180:  delta -= 360
+                    elif delta < -180: delta += 360
+                    dt_sample = t0 - (win[-1][0] if win else t0)
+                    implied = abs(delta / 360.0 / dt_sample * 60.0) if dt_sample > 0 else 0.0
+                    if implied <= ENC_MAX_MOTOR_RPM:
+                        cum += delta
+                        win.append((t0, cum))
+                        accepted = True
+                else:
+                    win.append((t0, cum))
+                    accepted = True
+                prev_angle = angle
+
+                while win and t0 - win[0][0] > ENC_WINDOW_SECS:
+                    win.popleft()
+                if len(win) >= 2:
+                    dt_w = win[-1][0] - win[0][0]
+                    da_w = win[-1][1] - win[0][1]
+                    if dt_w > 0:
+                        window_rpm = round(
+                            sign * (da_w / 360.0) / dt_w * 60.0 / ENCODER_GEAR_RATIO, 2)
+                        result[rpm_key] = window_rpm
+
+                dist_key = f"{side}_dist_m"
+                result[dist_key] = round(
+                    sign * cum / 360.0 / ENCODER_GEAR_RATIO * math.pi * WHEEL_DIAMETER_M, 4)
+
+                with _enc_out_lock:
+                    _enc_out.update(result)
+
+                if log_file:
+                    rpm_str = f"{window_rpm:.2f}" if window_rpm is not None else ""
+                    log_file.write(
+                        f"{t0:.6f},{angle:.3f},{delta:.3f},{cum:.3f},"
+                        f"{dt_sample*1000:.3f},{implied:.1f},"
+                        f"{'Y' if accepted else 'N'},{rpm_str}\n"
+                    )
+            except Exception as e:
+                if log_file:
+                    log_file.write(f"{t0:.6f},READ_ERROR,,,,,N,\n")
+
+        sleep_for = interval - (time.monotonic() - t0)
+        if sleep_for > 0:
+            time.sleep(sleep_for)
+
+
+def _encoder_loop():
+    """Spawn one thread per encoder so both I2C buses are read in parallel."""
+    import threading as _t
+    _t.Thread(target=_single_encoder_loop,
+               args=(4, 0x36, "left",  ENC_LEFT_SIGN,  "left_angle",  "left_rpm"),
+               daemon=True).start()
+    _t.Thread(target=_single_encoder_loop,
+               args=(5, 0x36, "right", ENC_RIGHT_SIGN, "right_angle", "right_rpm"),
+               daemon=True).start()
+
+
+# ── sensor + motor threads ────────────────────────────────────────────────────
 def _sensor_loop(dashboard_url: Optional[str]):
     gps: Optional[object] = None
     imu: Optional[object] = None
-    enc_left: Optional[object] = None
-    enc_right: Optional[object] = None
-    _enc_prev: dict = {"left": None, "right": None, "ts": None}
     _reader = _PersistentReader(timeout=2.0)
 
     if not dashboard_url:
@@ -345,19 +477,7 @@ def _sensor_loop(dashboard_url: Optional[str]):
             except Exception as e:
                 print(f"[IMU] error: {e}")
 
-        if _HAS_ENC:
-            try:
-                enc_left = AS5600Encoder(bus_id=1, address=0x36)
-                enc_left.open()
-                print("[ENC] left encoder opened (bus 1, addr 0x36)")
-            except Exception as e:
-                print(f"[ENC] left encoder: {e}")
-            try:
-                enc_right = AS5600Encoder(bus_id=0, address=0x36)
-                enc_right.open()
-                print("[ENC] right encoder opened (bus 0, addr 0x36)")
-            except Exception as e:
-                print(f"[ENC] right encoder: {e}")
+        # encoders are read by the dedicated _encoder_loop thread
 
     while True:
         with _state_lock:
@@ -403,6 +523,8 @@ def _sensor_loop(dashboard_url: Optional[str]):
                         "right_rpm": enc.get("right_rpm"),
                         "left_angle": enc.get("left_angle"),
                         "right_angle": enc.get("right_angle"),
+                        "left_dist_m": enc.get("left_dist_m", 0.0),
+                        "right_dist_m": enc.get("right_dist_m", 0.0),
                     })
                 state["motor_online"] = bool(dash.get("motor_online"))
                 state["motor_source"] = "dashboard"
@@ -468,36 +590,8 @@ def _sensor_loop(dashboard_url: Optional[str]):
                 state["motor_online"] = _active_motor is not None
             state["motor_source"] = "local"
 
-            now_enc = time.time()
-            if enc_left:
-                try:
-                    la = enc_left.read_angle_deg()
-                    state["encoders"]["left_angle"] = round(la, 2)
-                    if _enc_prev["left"] is not None and _enc_prev["ts"] is not None:
-                        dt = now_enc - _enc_prev["ts"]
-                        if dt > 0:
-                            d = la - _enc_prev["left"]
-                            if d > 180: d -= 360
-                            elif d < -180: d += 360
-                            state["encoders"]["left_rpm"] = round((d / 360.0) / dt * 60.0, 2)
-                    _enc_prev["left"] = la
-                except Exception:
-                    pass
-            if enc_right:
-                try:
-                    ra = enc_right.read_angle_deg()
-                    state["encoders"]["right_angle"] = round(ra, 2)
-                    if _enc_prev["right"] is not None and _enc_prev["ts"] is not None:
-                        dt = now_enc - _enc_prev["ts"]
-                        if dt > 0:
-                            d = ra - _enc_prev["right"]
-                            if d > 180: d -= 360
-                            elif d < -180: d += 360
-                            state["encoders"]["right_rpm"] = round((d / 360.0) / dt * 60.0, 2)
-                    _enc_prev["right"] = ra
-                except Exception:
-                    pass
-            _enc_prev["ts"] = now_enc
+            with _enc_out_lock:
+                state["encoders"].update(_enc_out)
 
         state["ts"] = time.time()
         with _state_lock:
@@ -660,6 +754,37 @@ def api_drive():
         return json.dumps({"error": str(exc)}), 500
 
 
+@app.route("/api/speed", methods=["POST"])
+def api_speed():
+    body = request.get_json(silent=True) or {}
+    try:
+        speed = max(0.0, min(1.0, float(body.get("speed", 1.0))))
+    except (TypeError, ValueError):
+        return json.dumps({"error": "speed must be 0.0–1.0"}), 400
+
+    if DASHBOARD_DRIVE_URL:
+        url = DASHBOARD_DRIVE_URL.replace("/api/drive", "/api/speed")
+        req_data = json.dumps({"speed": speed}).encode()
+        req = urllib.request.Request(url, data=req_data,
+                                     headers={"Content-Type": "application/json"},
+                                     method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                return resp.read().decode(), resp.getcode()
+        except Exception as exc:
+            return json.dumps({"error": str(exc)}), 502
+
+    with _motor_lock:
+        driver = _active_motor
+    if driver is None:
+        return json.dumps({"error": "motor driver unavailable"}), 503
+
+    driver.set_speed(speed)
+    with _state_lock:
+        _sensor_state.setdefault("motor", {})["speed"] = speed
+    return json.dumps({"ok": True, "speed": speed})
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Orange Pi data sender")
     parser.add_argument("--server", default="http://192.168.1.100:9000", help="Central dashboard server URL")
@@ -702,11 +827,17 @@ if __name__ == "__main__":
         print(f"[OrangePi] Sensor source: {DASHBOARD_URL} (dashboard passthrough)")
         print(f"[OrangePi] Drive source: {DASHBOARD_DRIVE_URL} (proxied)")
     else:
+        print(f"[OrangePi] GPS library:     {'OK' if _HAS_GPS else 'MISSING — install pynmea2/pyserial'}")
+        print(f"[OrangePi] IMU library:     {'OK' if _HAS_IMU else 'MISSING — install adafruit-circuitpython-bno055'}")
+        print(f"[OrangePi] Encoder library: {'OK' if _HAS_ENC else 'MISSING — install smbus2'}")
+        print(f"[OrangePi] Motor library:   {'OK' if _HAS_MOTOR else 'MISSING — install gpiod>=2.4.2'}")
         if _HAS_MOTOR:
             threading.Thread(target=_motor_manager, daemon=True).start()
         else:
             print("[OrangePi] MotorDriver import failed; /api/drive will return 503")
 
+    if not DASHBOARD_URL:
+        threading.Thread(target=_encoder_loop, daemon=True).start()
     threading.Thread(target=_sensor_loop, args=(DASHBOARD_URL,), daemon=True).start()
     threading.Thread(target=_register_and_send_loop, args=(args.server, args.my_ip, DRIVE_PORT), daemon=True).start()
 

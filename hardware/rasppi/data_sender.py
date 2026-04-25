@@ -125,11 +125,10 @@ def _start_ffmpeg(dev_name: str) -> subprocess.Popen:
     if H264_ENCODER == "libx264":
         cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency"]
     else:
-        cmd += ["-c:v", H264_ENCODER, "-extra_hw_frames", "0", "-vf", "format=yuv420p"]
+        cmd += ["-c:v", H264_ENCODER, "-vf", "format=yuv420p"]
     cmd += [
         "-b:v", "800k", "-g", "5",
-        "-flush_packets", "1",
-        "-f", "rtsp", "-rtsp_transport", "udp",
+        "-f", "rtsp", "-rtsp_transport", "tcp",
         f"rtsp://127.0.0.1:{MEDIAMTX_RTSP_PORT}/{dev_name}",
     ]
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, bufsize=0)
