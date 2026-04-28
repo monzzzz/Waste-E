@@ -7,8 +7,12 @@ stores live device state in memory, and renders a rich operations dashboard.
 """
 from __future__ import annotations
 
+import csv
+import datetime
 import json
 import os
+import pathlib
+import subprocess
 import threading
 import time
 import urllib.error
@@ -33,6 +37,16 @@ CAMERA_LIMITS = {
 }
 
 DRIVE_ACTIONS = {"forward", "backward", "left", "right", "stop"}
+
+RECORDINGS_DIR = pathlib.Path(
+    os.getenv(
+        "RECORDINGS_DIR",
+        str(pathlib.Path(__file__).parent / "rasppi" / "recordings"),
+    )
+)
+
+_recording_lock = threading.Lock()
+_recording_session: dict[str, Any] | None = None
 
 _motor_command_state: dict[str, Any] = {
     "last_action": "stop",
@@ -297,6 +311,72 @@ def api_register() -> Response:
     return jsonify({"status": "ok"})
 
 
+_TELEMETRY_HZ = 10
+
+_CSV_COLUMNS = [
+    "timestamp", "datetime",
+    "gps_lat", "gps_lon", "gps_alt", "gps_speed", "gps_heading", "gps_satellites", "gps_fix",
+    "imu_heading", "imu_roll", "imu_pitch",
+    "imu_qw", "imu_qx", "imu_qy", "imu_qz",
+    "imu_temp", "imu_cal_sys", "imu_cal_gyro", "imu_cal_accel", "imu_cal_mag",
+    "enc_left_rpm", "enc_right_rpm",
+    "enc_left_angle", "enc_right_angle",
+    "enc_left_dist_m", "enc_right_dist_m",
+    "motor_online",
+]
+
+
+def _telemetry_worker(stop_event: threading.Event) -> None:
+    interval = 1.0 / _TELEMETRY_HZ
+    while not stop_event.is_set():
+        t0 = time.monotonic()
+
+        with _device_lock:
+            op_state = _safe_state(_devices.get("orangepi", {}).get("state"))
+
+        gps = _safe_state(op_state.get("gps"))
+        imu = _safe_state(op_state.get("imu"))
+        enc = _safe_state(op_state.get("encoders"))
+        now = time.time()
+
+        row = {
+            "timestamp": now,
+            "datetime": datetime.datetime.fromtimestamp(now).isoformat(timespec="milliseconds"),
+            "gps_lat": gps.get("lat"), "gps_lon": gps.get("lon"),
+            "gps_alt": gps.get("alt"), "gps_speed": gps.get("speed"),
+            "gps_heading": gps.get("heading"), "gps_satellites": gps.get("satellites"),
+            "gps_fix": gps.get("fix"),
+            "imu_heading": imu.get("heading"), "imu_roll": imu.get("roll"),
+            "imu_pitch": imu.get("pitch"),
+            "imu_qw": imu.get("qw"), "imu_qx": imu.get("qx"),
+            "imu_qy": imu.get("qy"), "imu_qz": imu.get("qz"),
+            "imu_temp": imu.get("temp"),
+            "imu_cal_sys": imu.get("cal_sys"), "imu_cal_gyro": imu.get("cal_gyro"),
+            "imu_cal_accel": imu.get("cal_accel"), "imu_cal_mag": imu.get("cal_mag"),
+            "enc_left_rpm": enc.get("left_rpm"), "enc_right_rpm": enc.get("right_rpm"),
+            "enc_left_angle": enc.get("left_angle"), "enc_right_angle": enc.get("right_angle"),
+            "enc_left_dist_m": enc.get("left_dist_m"), "enc_right_dist_m": enc.get("right_dist_m"),
+            "motor_online": op_state.get("motor_online"),
+        }
+
+        with _recording_lock:
+            sess = _recording_session
+
+        if sess:
+            try:
+                with open(sess["telemetry_path"], "a", newline="") as fh:
+                    csv.DictWriter(fh, fieldnames=_CSV_COLUMNS).writerow(row)
+                with _recording_lock:
+                    if _recording_session and _recording_session["id"] == sess["id"]:
+                        _recording_session["row_count"] += 1
+                        if gps.get("fix") and gps.get("lat") is not None and gps.get("lon") is not None:
+                            _recording_session["gps_coords"].append([gps["lon"], gps["lat"]])
+            except Exception:
+                pass
+
+        stop_event.wait(max(0.0, interval - (time.monotonic() - t0)))
+
+
 @app.route("/api/data", methods=["POST"])
 def api_data() -> Response:
     payload = request.get_json(silent=True)
@@ -511,6 +591,151 @@ def api_speed() -> Response:
         except Exception:
             continue
     return jsonify({"error": "speed proxy failed"}), 502
+
+
+@app.route("/api/recording/start", methods=["POST"])
+def api_recording_start() -> Response:
+    global _recording_session
+    with _recording_lock:
+        if _recording_session is not None:
+            return jsonify({"ok": False, "error": "already recording", "session": _recording_session["id"]}), 409
+
+        ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        session_dir = RECORDINGS_DIR / ts
+        session_dir.mkdir(parents=True, exist_ok=True)
+        (session_dir / "videos").mkdir(exist_ok=True)
+
+        with _device_lock:
+            summary = _build_summary_locked()
+
+        meta = {
+            "id": ts,
+            "started_at": time.time(),
+            "started_at_iso": datetime.datetime.now().isoformat(),
+            "cameras": summary.get("cameras", []),
+            "devices": summary.get("devices", {}),
+        }
+        (session_dir / "session.json").write_text(json.dumps(meta, indent=2))
+
+        telemetry_path = str(session_dir / "telemetry.csv")
+        with open(telemetry_path, "w", newline="") as fh:
+            csv.DictWriter(fh, fieldnames=_CSV_COLUMNS).writeheader()
+
+        stop_event = threading.Event()
+        worker = threading.Thread(target=_telemetry_worker, args=(stop_event,), daemon=True)
+
+        _recording_session = {
+            "id": ts,
+            "dir": str(session_dir),
+            "telemetry_path": telemetry_path,
+            "gps_track_path": str(session_dir / "gps_track.geojson"),
+            "started_at": time.time(),
+            "row_count": 0,
+            "gps_coords": [],
+            "_stop_event": stop_event,
+            "_worker": worker,
+        }
+        worker.start()
+
+    return jsonify({"ok": True, "session": ts, "dir": str(session_dir)})
+
+
+@app.route("/api/recording/stop", methods=["POST"])
+def api_recording_stop() -> Response:
+    global _recording_session
+    with _recording_lock:
+        if _recording_session is None:
+            return jsonify({"ok": False, "error": "not recording"}), 409
+        sess = _recording_session
+        _recording_session = None
+
+    sess["_stop_event"].set()
+    sess["_worker"].join(timeout=2.0)
+
+    coords = sess["gps_coords"]
+    if coords:
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": coords},
+                "properties": {"session": sess["id"], "point_count": len(coords)},
+            }],
+        }
+        pathlib.Path(sess["gps_track_path"]).write_text(json.dumps(geojson, indent=2))
+
+    session_file = pathlib.Path(sess["dir"]) / "session.json"
+    if session_file.exists():
+        meta = json.loads(session_file.read_text())
+        meta["ended_at"] = time.time()
+        meta["ended_at_iso"] = datetime.datetime.now().isoformat()
+        meta["duration_s"] = time.time() - sess["started_at"]
+        meta["telemetry_rows"] = sess["row_count"]
+        meta["gps_points"] = len(coords)
+        session_file.write_text(json.dumps(meta, indent=2))
+
+    return jsonify({
+        "ok": True,
+        "session": sess["id"],
+        "dir": sess["dir"],
+        "rows": sess["row_count"],
+        "gps_points": len(coords),
+    })
+
+
+@app.route("/api/recording/status")
+def api_recording_status() -> Response:
+    with _recording_lock:
+        if _recording_session is None:
+            return jsonify({"recording": False})
+        return jsonify({
+            "recording": True,
+            "session": _recording_session["id"],
+            "dir": _recording_session["dir"],
+            "rows": _recording_session["row_count"],
+            "elapsed_s": time.time() - _recording_session["started_at"],
+        })
+
+
+@app.route("/api/recording/video", methods=["POST"])
+def api_recording_video() -> Response:
+    cam_id = request.args.get("cam", "").strip()
+    if not cam_id:
+        return jsonify({"error": "missing cam param"}), 400
+
+    with _recording_lock:
+        sess = _recording_session
+
+    if sess is None:
+        return jsonify({"error": "no active session"}), 409
+
+    ext = "webm"
+    ct = request.content_type or ""
+    if "mp4" in ct:
+        ext = "mp4"
+
+    safe_cam = "".join(c for c in cam_id if c.isalnum() or c in "-_")
+    dest = pathlib.Path(sess["dir"]) / "videos" / f"{safe_cam}.{ext}"
+    try:
+        dest.write_bytes(request.data)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    # If the browser sent WebM, remux to MP4 with ffmpeg (no re-encode, fast)
+    if ext == "webm":
+        mp4_dest = dest.with_suffix(".mp4")
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", str(dest), "-c", "copy", str(mp4_dest)],
+                capture_output=True, timeout=120,
+            )
+            if mp4_dest.exists() and mp4_dest.stat().st_size > 0:
+                dest.unlink()
+                dest = mp4_dest
+        except Exception:
+            pass  # keep the webm if ffmpeg fails
+
+    return jsonify({"ok": True, "file": str(dest)})
 
 
 @app.route("/api/whep/<device>/<path:stream>", methods=["POST", "OPTIONS"])
@@ -1109,6 +1334,29 @@ html,body{
   }
   #gps-bar{grid-template-columns:repeat(3,minmax(80px,1fr))}
 }
+
+#rec-btn{
+  display:flex;align-items:center;gap:6px;
+  padding:4px 12px;border-radius:999px;
+  font-size:11px;font-weight:700;letter-spacing:.06em;
+  cursor:pointer;border:1px solid var(--border-hi);
+  background:#0f1928;color:var(--muted);
+  transition:all .15s;white-space:nowrap;
+}
+#rec-btn:hover{border-color:var(--rose);color:var(--rose)}
+#rec-btn.recording{
+  background:#2c0a13;border-color:var(--rose);color:var(--rose);
+}
+#rec-btn .rec-dot{
+  width:7px;height:7px;border-radius:50%;
+  background:var(--muted);flex-shrink:0;
+}
+#rec-btn.recording .rec-dot{
+  background:var(--rose);box-shadow:0 0 7px var(--rose);
+  animation:recpulse 1.2s infinite;
+}
+@keyframes recpulse{0%,100%{opacity:1}50%{opacity:.3}}
+#rec-elapsed{font-family:var(--mono);font-size:10px}
 </style>
 </head>
 <body>
@@ -1132,6 +1380,9 @@ html,body{
     <div class="chip warn" id="chip-cams"><div class="dot"></div>0 / {{ camera_target }} cameras</div>
 
     <div id="hdr-right">
+      <button id="rec-btn" onclick="toggleRecording()">
+        <div class="rec-dot"></div><span id="rec-label">REC</span><span id="rec-elapsed"></span>
+      </button>
       <div id="last-refresh">waiting for telemetry...</div>
       <div id="clock">--:--:--</div>
     </div>
@@ -2242,6 +2493,177 @@ function wireControls(){
     }, 80);
   });
 }
+
+// ── Recording ──────────────────────────────────────────────────────────────
+
+let _recActive = false;
+let _recSession = null;
+let _recStartTs = null;
+let _recElapsedTimer = null;
+let _mediaRecorders = [];
+let _recChunks = {};
+
+function _recElapsedStr() {
+  const s = Math.floor((Date.now() - _recStartTs) / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  if (h > 0) return ` ${h}:${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
+  return ` ${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
+}
+
+function _bestMimeType() {
+  const tries = [
+    'video/mp4;codecs=avc1',
+    'video/mp4;codecs=h264',
+    'video/mp4',
+    'video/webm;codecs=vp9',
+    'video/webm;codecs=vp8',
+    'video/webm',
+  ];
+  return tries.find(m => MediaRecorder.isTypeSupported(m)) || '';
+}
+
+function _startCamRecorder(stream, camId) {
+  const mime = _bestMimeType();
+  let mr;
+  try {
+    mr = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
+  } catch(e) {
+    try { mr = new MediaRecorder(stream); } catch(_) { return; }
+  }
+  _recChunks[camId] = [];
+  mr.ondataavailable = (e) => { if (e.data && e.data.size > 0) _recChunks[camId].push(e.data); };
+  mr.start(1000);
+  _mediaRecorders.push({ mr, camId });
+}
+
+async function startRecording() {
+  let resp, data;
+  try {
+    resp = await fetch('/api/recording/start', { method: 'POST' });
+    data = await resp.json();
+  } catch(e) { alert('Could not reach dashboard: ' + e.message); return; }
+  if (!data.ok) { alert('Recording error: ' + (data.error || 'unknown')); return; }
+
+  _recActive = true;
+  _recSession = data.session;
+  _recStartTs = Date.now();
+  _mediaRecorders = [];
+  _recChunks = {};
+
+  // WebRTC streams — pull directly from _peerConns so we don't miss cams
+  // where srcObject was set before the video element rendered.
+  // Clone the track so stopping the recorder never kills the live stream.
+  for (const [camId, pc] of Object.entries(_peerConns)) {
+    if (!pc || typeof pc.getReceivers !== 'function') continue;
+    const receiver = pc.getReceivers().find(r => r.track && r.track.kind === 'video');
+    if (!receiver) continue;
+    const stream = new MediaStream([receiver.track.clone()]);
+    _startCamRecorder(stream, camId);
+  }
+
+  // MJPEG img streams — canvas capture for cameras not already covered by WebRTC
+  document.querySelectorAll('#cams-grid img').forEach((img) => {
+    const card = img.closest('.cam-card');
+    const camId = card ? card.dataset.camid : null;
+    if (!camId || _recChunks[camId] !== undefined) return;
+    const w = img.offsetWidth || 640;
+    const h = img.offsetHeight || 480;
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx2 = canvas.getContext('2d');
+    const intervalId = setInterval(() => {
+      if (!_recActive) { clearInterval(intervalId); return; }
+      try { ctx2.drawImage(img, 0, 0, w, h); } catch(_) {}
+    }, 67);
+    const stream = canvas.captureStream(15);
+    _startCamRecorder(stream, camId);
+    _mediaRecorders[_mediaRecorders.length - 1]._interval = intervalId;
+  });
+
+  const camCount = Object.keys(_recChunks).length;
+  const btn = document.getElementById('rec-btn');
+  btn.classList.add('recording');
+  document.getElementById('rec-label').textContent = `STOP (${camCount} cam${camCount !== 1 ? 's' : ''})`;
+  _recElapsedTimer = setInterval(() => {
+    document.getElementById('rec-elapsed').textContent = _recElapsedStr();
+  }, 1000);
+  document.getElementById('rec-elapsed').textContent = _recElapsedStr();
+}
+
+async function stopRecording() {
+  _recActive = false;
+  clearInterval(_recElapsedTimer);
+
+  // Stop all MediaRecorders and collect blobs
+  const downloads = [];
+  for (const entry of _mediaRecorders) {
+    if (entry._interval) clearInterval(entry._interval);
+    if (entry.mr.state !== 'inactive') {
+      await new Promise((resolve) => { entry.mr.onstop = resolve; entry.mr.stop(); });
+    }
+    const chunks = _recChunks[entry.camId] || [];
+    if (chunks.length > 0) {
+      downloads.push({ camId: entry.camId, blob: new Blob(chunks, { type: chunks[0].type || 'video/webm' }) });
+    }
+  }
+  _mediaRecorders = [];
+  _recChunks = {};
+
+  // Upload videos FIRST while the session is still active on the server,
+  // then stop the session so it can finalize session.json with correct counts.
+  const uploadResults = await Promise.all(downloads.map(async ({ camId, blob }) => {
+    try {
+      const r = await fetch(`/api/recording/video?cam=${encodeURIComponent(camId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': blob.type || 'video/webm' },
+        body: blob,
+      });
+      const j = await r.json().catch(() => ({}));
+      return { camId, ok: r.ok, file: j.file, error: j.error };
+    } catch(e) {
+      return { camId, ok: false, error: e.message };
+    }
+  }));
+
+  let resp, data;
+  try {
+    resp = await fetch('/api/recording/stop', { method: 'POST' });
+    data = await resp.json();
+  } catch(e) { data = {}; }
+
+  const btn = document.getElementById('rec-btn');
+  btn.classList.remove('recording');
+  document.getElementById('rec-label').textContent = 'REC';
+  document.getElementById('rec-elapsed').textContent = '';
+
+  if (data.ok) {
+    const failed = uploadResults.filter(r => !r.ok).map(r => r.camId);
+    const lines = [
+      `Session: ${data.session}`,
+      `Saved to: ${data.dir}`,
+      `Telemetry rows: ${data.rows}`,
+      `GPS points: ${data.gps_points}`,
+      `Videos saved: ${uploadResults.filter(r => r.ok).length} / ${downloads.length}`,
+    ];
+    if (failed.length) lines.push(`Failed uploads: ${failed.join(', ')}`);
+    alert('Recording saved!\n\n' + lines.join('\n'));
+  }
+
+  _recSession = null;
+  _recStartTs = null;
+}
+
+async function toggleRecording() {
+  if (_recActive) {
+    await stopRecording();
+  } else {
+    await startRecording();
+  }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 
 initMap();
 wireControls();
