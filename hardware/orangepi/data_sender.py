@@ -63,7 +63,7 @@ except Exception:
 GPS_PORT = os.getenv("GPS_PORT", "/dev/ttyS0")
 IMU_PORT = os.getenv("IMU_PORT", "/dev/ttyS6")
 CAM_PORT = int(os.getenv("CAM_PORT", "8890"))
-ROTATE_180 = {"/dev/video6"}
+ROTATE_180 = {}
 CAM_W, CAM_H, CAM_FPS, CAM_Q = 640, 480, 10, 2
 CAM_W_WEBRTC, CAM_H_WEBRTC = 640, 480
 SEND_HZ = 5.0
