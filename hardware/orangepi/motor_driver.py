@@ -25,9 +25,27 @@ L_ENA = (CHIP1, 7)   # GPIO1_A7 / PWM3_M3
 LEFT_REVERSED = False
 RIGHT_REVERSED = True
 
-SUPPORTED_ACTIONS = {"forward", "backward", "left", "right", "stop"}
+SUPPORTED_ACTIONS = {
+    "forward", "backward", "left", "right", "stop",
+    "forward_left", "forward_right", "backward_left", "backward_right",
+}
+
+# Inner-wheel speed ratio for arc turns (0 = pure pivot, 1 = no curve)
+_DIAG_INNER = 0.4
 
 _PWM_HZ = 200  # software PWM carrier frequency
+
+# How fast duties ramp toward their targets (full scale per second)
+# 4.0 → takes ~150 ms to go from full speed to 40% inner wheel
+_RAMP_RATE = 4.0
+
+
+def _ramp_toward(current: float, target: float, step: float) -> float:
+    if current < target:
+        return min(current + step, target)
+    if current > target:
+        return max(current - step, target)
+    return current
 
 
 def _request_line(chip_path: str, offset: int, initial_value: int = 0):
@@ -72,9 +90,11 @@ class MotorDriver:
         self._lines: dict[str, object] = {}
         self._is_open = False
         self._lock = threading.Lock()
-        self._speed: float = 1.0       # 0.0 – 1.0
-        self._left_en: bool = False    # should left ENA be driven?
-        self._right_en: bool = False   # should right ENA be driven?
+        self._speed: float = 1.0        # 0.0 – 1.0 global speed scalar
+        self._left_duty: float = 0.0    # current per-motor duty (ramped)
+        self._right_duty: float = 0.0
+        self._left_target: float = 0.0  # target duty apply_action wants to reach
+        self._right_target: float = 0.0
 
     def open(self) -> None:
         if self._is_open:
@@ -130,6 +150,7 @@ class MotorDriver:
 
     def _pwm_loop(self) -> None:
         period = 1.0 / _PWM_HZ
+        ramp_step = _RAMP_RATE * period
         len_ = self._lines["left_en"]
         ren  = self._lines["right_en"]
 
@@ -137,41 +158,60 @@ class MotorDriver:
             t0 = time.monotonic()
 
             with self._lock:
-                speed  = self._speed
-                l_want = self._left_en
-                r_want = self._right_en
+                self._left_duty  = _ramp_toward(self._left_duty,  self._left_target,  ramp_step)
+                self._right_duty = _ramp_toward(self._right_duty, self._right_target, ramp_step)
+                l_duty = self._left_duty
+                r_duty = self._right_duty
 
-            if not l_want and not r_want:
-                # Stopped — keep ENAs low
+            if l_duty <= 0 and r_duty <= 0:
                 _set_line(len_[0], len_[1], False)
                 _set_line(ren[0],  ren[1],  False)
                 rem = period - (time.monotonic() - t0)
                 if rem > 0:
                     time.sleep(rem)
+                continue
 
-            elif speed >= 0.99:
-                # Full speed — keep ENAs high
-                _set_line(len_[0], len_[1], l_want)
-                _set_line(ren[0],  ren[1],  r_want)
+            if l_duty >= 0.99 and r_duty >= 0.99:
+                # Full speed both — keep ENAs high
+                _set_line(len_[0], len_[1], True)
+                _set_line(ren[0],  ren[1],  True)
                 rem = period - (time.monotonic() - t0)
                 if rem > 0:
                     time.sleep(rem)
+                continue
 
+            # Time-sliced per-motor PWM within one period.
+            # Segment 1 [0, low]: both on
+            # Segment 2 [low, high]: only higher-duty motor on
+            # Segment 3 [high, 1]: both off
+            low  = min(l_duty, r_duty)
+            high = max(l_duty, r_duty)
+            l_is_high = l_duty >= r_duty
+
+            _set_line(len_[0], len_[1], l_duty > 0)
+            _set_line(ren[0],  ren[1],  r_duty > 0)
+            if low > 0:
+                time.sleep(period * low)
+
+            # Turn off the lower-duty motor
+            if l_is_high:
+                _set_line(ren[0], ren[1], False)
             else:
-                # PWM: on for duty cycle, off for remainder
-                on_t  = period * speed
-                off_t = period * (1.0 - speed)
-                _set_line(len_[0], len_[1], l_want)
-                _set_line(ren[0],  ren[1],  r_want)
-                time.sleep(on_t)
                 _set_line(len_[0], len_[1], False)
-                _set_line(ren[0],  ren[1],  False)
-                time.sleep(off_t)
+            mid = high - low
+            if mid > 0:
+                time.sleep(period * mid)
+
+            _set_line(len_[0], len_[1], False)
+            _set_line(ren[0],  ren[1],  False)
+            tail = 1.0 - high
+            if tail > 0:
+                time.sleep(period * tail)
 
     # ── public API ────────────────────────────────────────────────────────────
 
     def set_speed(self, speed: float) -> None:
-        """Set motor speed. 0.0 = stopped, 1.0 = full speed."""
+        """Set global speed scalar. Re-applies current action's duty ratios at new speed."""
         with self._lock:
             self._speed = max(0.0, min(1.0, float(speed)))
 
@@ -191,34 +231,39 @@ class MotorDriver:
         ri2 = self._lines["right_in2"]
 
         if action == "stop":
-            # Clear direction pins and disable ENAs via PWM thread
+            # Immediate: cut power, clear direction pins, reset ramp
             _set_line(li1[0], li1[1], False)
             _set_line(li2[0], li2[1], False)
             _set_line(ri1[0], ri1[1], False)
             _set_line(ri2[0], ri2[1], False)
             with self._lock:
-                self._left_en  = False
-                self._right_en = False
-        else:
-            if action == "forward":
-                _set_direction(li1, li2, forward=True,  reversed_side=LEFT_REVERSED)
-                _set_direction(ri1, ri2, forward=True,  reversed_side=RIGHT_REVERSED)
-                l, r = True, True
-            elif action == "backward":
-                _set_direction(li1, li2, forward=False, reversed_side=LEFT_REVERSED)
-                _set_direction(ri1, ri2, forward=False, reversed_side=RIGHT_REVERSED)
-                l, r = True, True
-            elif action == "left":
-                _set_direction(li1, li2, forward=False, reversed_side=LEFT_REVERSED)
-                _set_direction(ri1, ri2, forward=True,  reversed_side=RIGHT_REVERSED)
-                l, r = True, True
-            elif action == "right":
-                _set_direction(li1, li2, forward=True,  reversed_side=LEFT_REVERSED)
-                _set_direction(ri1, ri2, forward=False, reversed_side=RIGHT_REVERSED)
-                l, r = True, True
-            with self._lock:
-                self._left_en  = l
-                self._right_en = r
+                self._left_duty   = 0.0
+                self._right_duty  = 0.0
+                self._left_target  = 0.0
+                self._right_target = 0.0
+            return
+
+        with self._lock:
+            spd = self._speed
+
+        # (left_forward, right_forward, left_scale, right_scale)
+        _ACT: dict[str, tuple[bool, bool, float, float]] = {
+            "forward":       (True,  True,  1.0,         1.0),
+            "backward":      (False, False, 1.0,         1.0),
+            "left":          (False, True,  1.0,         1.0),
+            "right":         (True,  False, 1.0,         1.0),
+            "forward_left":  (True,  True,  _DIAG_INNER, 1.0),
+            "forward_right": (True,  True,  1.0,         _DIAG_INNER),
+            "backward_left": (False, False, _DIAG_INNER, 1.0),
+            "backward_right":(False, False, 1.0,         _DIAG_INNER),
+        }
+        l_fwd, r_fwd, l_scale, r_scale = _ACT[action]
+        _set_direction(li1, li2, forward=l_fwd, reversed_side=LEFT_REVERSED)
+        _set_direction(ri1, ri2, forward=r_fwd, reversed_side=RIGHT_REVERSED)
+        with self._lock:
+            # Set targets — the PWM loop ramps duties smoothly toward them
+            self._left_target  = spd * l_scale
+            self._right_target = spd * r_scale
 
     def pulse(self, action: str, duration_s: float) -> None:
         if duration_s < 0.0:

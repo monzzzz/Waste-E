@@ -37,7 +37,10 @@ CAMERA_LIMITS = {
     "rasppi": 3,
 }
 
-DRIVE_ACTIONS = {"forward", "backward", "left", "right", "stop"}
+DRIVE_ACTIONS = {
+    "forward", "backward", "left", "right", "stop",
+    "forward_left", "forward_right", "backward_left", "backward_right",
+}
 
 RECORDINGS_DIR = pathlib.Path(
     os.getenv(
@@ -2344,9 +2347,15 @@ function renderCameras(cameras){
   });
 }
 
+let _pendingDriveAction = null;
+
 async function sendDrive(action){
-  if (sendingDrive) return;
+  if (sendingDrive) {
+    _pendingDriveAction = action;
+    return;
+  }
   sendingDrive = true;
+  _pendingDriveAction = null;
 
   try {
     const resp = await fetch('/api/drive', {
@@ -2360,17 +2369,21 @@ async function sendDrive(action){
       const msg = payload.error || 'command failed';
       document.getElementById('drive-status').textContent = msg;
       document.getElementById('drive-status').style.color = 'var(--rose)';
-      return;
+    } else {
+      currentAction = action;
+      document.getElementById('drive-status').textContent = action.toUpperCase().replace('_', ' ');
+      document.getElementById('drive-status').style.color = action === 'stop' ? 'var(--muted)' : 'var(--emerald)';
     }
-
-    currentAction = action;
-    document.getElementById('drive-status').textContent = action.toUpperCase();
-    document.getElementById('drive-status').style.color = action === 'stop' ? 'var(--muted)' : 'var(--emerald)';
   } catch (err) {
     document.getElementById('drive-status').textContent = 'proxy unreachable';
     document.getElementById('drive-status').style.color = 'var(--rose)';
   } finally {
     sendingDrive = false;
+    if (_pendingDriveAction !== null) {
+      const next = _pendingDriveAction;
+      _pendingDriveAction = null;
+      sendDrive(next);
+    }
   }
 }
 
@@ -2584,13 +2597,43 @@ function wireControls(){
     });
   });
 
+  const _driveKeys = new Set();
+  const _DRIVE_KEY_SET = new Set(['arrowup','w','arrowdown','s','arrowleft','a','arrowright','d',' ','x']);
+
+  function _actionFromKeys() {
+    const fwd = _driveKeys.has('arrowup')    || _driveKeys.has('w');
+    const bwd = _driveKeys.has('arrowdown')  || _driveKeys.has('s');
+    const lft = _driveKeys.has('arrowleft')  || _driveKeys.has('a');
+    const rgt = _driveKeys.has('arrowright') || _driveKeys.has('d');
+    const stp = _driveKeys.has(' ')          || _driveKeys.has('x');
+    if (stp || (!fwd && !bwd && !lft && !rgt)) return 'stop';
+    if (fwd && lft) return 'forward_left';
+    if (fwd && rgt) return 'forward_right';
+    if (bwd && lft) return 'backward_left';
+    if (bwd && rgt) return 'backward_right';
+    if (fwd) return 'forward';
+    if (bwd) return 'backward';
+    if (lft) return 'left';
+    return 'right';
+  }
+
   window.addEventListener('keydown', (event) => {
     const key = event.key.toLowerCase();
-    if (key === 'arrowup' || key === 'w') { sendDrive('forward'); setActiveAction('forward'); }
-    if (key === 'arrowdown' || key === 's') { sendDrive('backward'); setActiveAction('backward'); }
-    if (key === 'arrowleft' || key === 'a') { sendDrive('left'); setActiveAction('left'); }
-    if (key === 'arrowright' || key === 'd') { sendDrive('right'); setActiveAction('right'); }
-    if (key === ' ' || key === 'x') { sendDrive('stop'); setActiveAction('stop'); }
+    if (!_DRIVE_KEY_SET.has(key)) return;
+    event.preventDefault();
+    _driveKeys.add(key);
+    const action = _actionFromKeys();
+    sendDrive(action);
+    setActiveAction(action);
+  });
+
+  window.addEventListener('keyup', (event) => {
+    const key = event.key.toLowerCase();
+    if (!_DRIVE_KEY_SET.has(key)) return;
+    _driveKeys.delete(key);
+    const action = _actionFromKeys();
+    sendDrive(action);
+    setActiveAction(action);
   });
 
   const speedSlider = document.getElementById('speed-slider');
@@ -2660,13 +2703,48 @@ function _startCamRecorder(stream, camId) {
   _mediaRecorders.push({ mr, camId });
 }
 
+async function syncRecordingState() {
+  try {
+    const resp = await fetch('/api/recording/status', { cache: 'no-store' });
+    const data = await resp.json();
+    if (data.recording && !_recActive) {
+      _recActive = true;
+      _recSession = data.session;
+      _recStartTs = Date.now() - (data.elapsed_s || 0) * 1000;
+      const btn = document.getElementById('rec-btn');
+      btn.classList.add('recording');
+      document.getElementById('rec-label').textContent = 'STOP';
+      _recElapsedTimer = setInterval(() => {
+        document.getElementById('rec-elapsed').textContent = _recElapsedStr();
+      }, 1000);
+      document.getElementById('rec-elapsed').textContent = _recElapsedStr();
+    } else if (!data.recording && _recActive) {
+      _recActive = false;
+      _recSession = null;
+      _recStartTs = null;
+      clearInterval(_recElapsedTimer);
+      document.getElementById('rec-btn').classList.remove('recording');
+      document.getElementById('rec-label').textContent = 'REC';
+      document.getElementById('rec-elapsed').textContent = '';
+    }
+  } catch(_) {}
+}
+
 async function startRecording() {
   let resp, data;
   try {
     resp = await fetch('/api/recording/start', { method: 'POST' });
     data = await resp.json();
   } catch(e) { alert('Could not reach dashboard: ' + e.message); return; }
-  if (!data.ok) { alert('Recording error: ' + (data.error || 'unknown')); return; }
+  if (!data.ok) {
+    if (data.error === 'already recording') {
+      // Server has an active session the frontend didn't know about — sync state
+      await syncRecordingState();
+    } else {
+      alert('Recording error: ' + (data.error || 'unknown'));
+    }
+    return;
+  }
 
   _recActive = true;
   _recSession = data.session;
@@ -2733,6 +2811,7 @@ wireControls();
 drawCompass(0);
 drawBirdEye(0, 0, 0);
 window.addEventListener('resize', _drawRpmGraph);
+syncRecordingState();
 refresh();
 setInterval(refresh, 500);
 </script>

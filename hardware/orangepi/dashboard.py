@@ -295,7 +295,8 @@ def api_drive():
         return json.dumps({"error": "motor driver not available"}), 503
     body   = request.get_json(force=True) or {}
     action = body.get("action", "stop")
-    if action not in ("forward", "backward", "left", "right", "stop"):
+    if action not in ("forward", "backward", "left", "right", "stop",
+                      "forward_left", "forward_right", "backward_left", "backward_right"):
         return json.dumps({"error": "invalid action"}), 400
     _motor_last_cmd = time.time()
     try:
