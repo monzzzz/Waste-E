@@ -41,7 +41,10 @@ DRIVE_ACTIONS = {"forward", "backward", "left", "right", "stop"}
 RECORDINGS_DIR = pathlib.Path(
     os.getenv(
         "RECORDINGS_DIR",
-        str(pathlib.Path(__file__).parent / "rasppi" / "recordings"),
+        str(
+            pathlib.Path.home()
+            / "Library/CloudStorage/GoogleDrive-elmond.pattanan@gmail.com/My Drive/Waste-E/recordings"
+        ),
     )
 )
 
