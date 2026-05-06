@@ -23,6 +23,7 @@ import json
 import math
 import os
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -102,6 +103,11 @@ _WEBRTC_MODE = os.path.isfile(MEDIAMTX_BIN) and os.access(MEDIAMTX_BIN, os.X_OK)
 DASHBOARD_URL: Optional[str] = None
 DASHBOARD_DRIVE_URL: Optional[str] = None
 DRIVE_PORT: int = CAM_PORT
+CENTRAL_SERVER_URL = ""
+LOCAL_RECORDINGS_DIR = Path(os.getenv("LOCAL_RECORDINGS_DIR", str(Path(__file__).parent / "recordings")))
+_DEVICE_NAME = "orangepi"
+_REC_LOCK = threading.Lock()
+_REC_SESSION: dict | None = None
 
 # ── camera discovery ─────────────────────────────────────────────────────────
 _VIDEO_RE = re.compile(r"^video\d+$")
@@ -186,6 +192,111 @@ def _get_proc(dev: str) -> subprocess.Popen:
         if p is None or p.poll() is not None:
             _CAM_PROCS[dev] = _start_ffmpeg(dev)
         return _CAM_PROCS[dev]
+
+
+def _safe_name(raw: str) -> str:
+    cleaned = "".join(c for c in raw if c.isalnum() or c in "-_")
+    return cleaned or "unnamed"
+
+
+def _start_recording_ffmpeg(dev: str, dest: Path) -> subprocess.Popen:
+    cam_name = os.path.basename(dev)
+    if _WEBRTC_MODE:
+        rtsp_url = f"rtsp://127.0.0.1:{MEDIAMTX_RTSP_PORT}/{cam_name}"
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-rtsp_transport", "tcp",
+            "-i", rtsp_url,
+            "-map", "0:v:0",
+            "-c:v", "copy",
+            "-an",
+            "-f", "matroska",
+            str(dest),
+        ]
+        return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, bufsize=0)
+
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "v4l2", "-input_format", "mjpeg",
+        "-framerate", str(CAM_FPS),
+        "-video_size", f"{CAM_W}x{CAM_H}",
+        "-i", dev,
+    ]
+    if dev in ROTATE_180:
+        cmd += ["-vf", "hflip,vflip"]
+        if H264_ENCODER == "libx264":
+            cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency"]
+        else:
+            cmd += ["-c:v", H264_ENCODER]
+    else:
+        cmd += ["-c:v", "copy"]
+    cmd += ["-an", "-f", "matroska", str(dest)]
+    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, bufsize=0)
+
+
+def _stop_recording_proc(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        proc.send_signal(signal.SIGINT)
+        proc.wait(timeout=8)
+        return
+    except Exception:
+        pass
+    try:
+        proc.terminate()
+        proc.wait(timeout=3)
+        return
+    except Exception:
+        pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
+
+
+def _upload_recording(upload_url: str, session_id: str, camera_name: str, fpath: Path) -> dict:
+    if upload_url:
+        parsed_upload = urllib.parse.urlsplit(upload_url)
+        if parsed_upload.hostname in {"localhost", "127.0.0.1", "::1"}:
+            upload_url = ""
+    if not upload_url:
+        upload_url = urllib.parse.urljoin(CENTRAL_SERVER_URL.rstrip("/") + "/", "api/recording/video")
+    parsed = urllib.parse.urlsplit(upload_url)
+    query = urllib.parse.urlencode(
+        {
+            "device": _DEVICE_NAME,
+            "cam": camera_name,
+            "session": session_id,
+            "filename": fpath.name,
+        }
+    )
+    path = parsed.path or "/"
+    if parsed.query:
+        path += f"?{parsed.query}&{query}"
+    else:
+        path += f"?{query}"
+
+    conn_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    conn = conn_cls(parsed.netloc, timeout=120)
+    try:
+        with open(fpath, "rb") as fh:
+            conn.request(
+                "POST",
+                path,
+                body=fh,
+                headers={
+                    "Content-Type": "video/x-matroska",
+                    "Content-Length": str(fpath.stat().st_size),
+                },
+            )
+            resp = conn.getresponse()
+            raw = resp.read().decode("utf-8", errors="replace")
+            if resp.status >= 400:
+                raise RuntimeError(f"dashboard upload http {resp.status}: {raw[:300]}")
+            return {"ok": True, "status": resp.status, "file": str(fpath), "response": raw[:300]}
+    finally:
+        conn.close()
 
 
 def _mjpeg_gen(dev: str):
@@ -711,6 +822,84 @@ def api_power():
     return json.dumps({"ok": True, "action": action})
 
 
+@app.route("/api/recording/start", methods=["POST"])
+def api_recording_start():
+    global _REC_SESSION
+
+    body = request.get_json(silent=True) or {}
+    session_id = _safe_name(str(body.get("session") or time.strftime("%Y-%m-%d_%H-%M-%S")))
+    upload_url = str(body.get("upload_url") or "")
+
+    with _REC_LOCK:
+        if _REC_SESSION is not None:
+            return json.dumps({"ok": False, "error": "already recording", "session": _REC_SESSION["id"]}), 409
+
+        session_dir = LOCAL_RECORDINGS_DIR / session_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+        camera_devs = [dev for dev in CAM_DEVS if os.path.exists(dev)]
+
+        procs: dict[str, subprocess.Popen] = {}
+        files: dict[str, str] = {}
+        errors: dict[str, str] = {}
+        for dev in camera_devs:
+            camera_name = os.path.basename(dev)
+            if _WEBRTC_MODE:
+                _get_proc(dev)
+            dest = session_dir / f"{_safe_name(camera_name)}.mkv"
+            try:
+                procs[camera_name] = _start_recording_ffmpeg(dev, dest)
+                files[camera_name] = str(dest)
+            except Exception as exc:
+                errors[camera_name] = str(exc)
+
+        _REC_SESSION = {
+            "id": session_id,
+            "dir": str(session_dir),
+            "upload_url": upload_url,
+            "started_at": time.time(),
+            "procs": procs,
+            "files": files,
+        }
+
+    print(f"[OrangePi recording] started {session_id}: {list(files)}")
+    return json.dumps({"ok": True, "session": session_id, "dir": str(session_dir), "cameras": list(files), "errors": errors})
+
+
+@app.route("/api/recording/stop", methods=["POST"])
+def api_recording_stop():
+    global _REC_SESSION
+
+    body = request.get_json(silent=True) or {}
+    expected_session = str(body.get("session") or "")
+
+    with _REC_LOCK:
+        if _REC_SESSION is None:
+            return json.dumps({"ok": False, "error": "not recording"}), 409
+        sess = _REC_SESSION
+        if expected_session and expected_session != sess["id"]:
+            return json.dumps({"ok": False, "error": "session mismatch", "session": sess["id"]}), 409
+        _REC_SESSION = None
+
+    for proc in sess["procs"].values():
+        _stop_recording_proc(proc)
+
+    uploads: list[dict] = []
+    for camera_name, raw_path in sess["files"].items():
+        fpath = Path(raw_path)
+        if not fpath.exists() or fpath.stat().st_size <= 0:
+            uploads.append({"camera": camera_name, "ok": False, "error": "empty or missing recording", "file": str(fpath)})
+            continue
+        try:
+            result = _upload_recording(sess["upload_url"], sess["id"], camera_name, fpath)
+            result["camera"] = camera_name
+            uploads.append(result)
+        except Exception as exc:
+            uploads.append({"camera": camera_name, "ok": False, "error": str(exc), "file": str(fpath)})
+
+    print(f"[OrangePi recording] stopped {sess['id']}: {uploads}")
+    return json.dumps({"ok": True, "session": sess["id"], "dir": sess["dir"], "uploads": uploads})
+
+
 @app.route("/api/drive", methods=["POST"])
 def api_drive():
     global _motor_last_error
@@ -799,6 +988,7 @@ if __name__ == "__main__":
 
     CAM_PORT = args.cam_port
     DASHBOARD_URL = args.dashboard
+    CENTRAL_SERVER_URL = args.server
 
     if DASHBOARD_URL:
         DRIVE_PORT = _extract_port(DASHBOARD_URL, 8888)

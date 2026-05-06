@@ -27,3 +27,7 @@ isaacsim/data
 output
 sit_dataset
 output_carla
+
+hardware/recordings/
+__pycache__/
+*.pyc

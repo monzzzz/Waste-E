@@ -5,7 +5,7 @@ rtspAddress: :8554
 
 webrtcAddress: :8889
 webrtcICEServers2: []
-webrtcAdditionalHosts: [172.17.113.61]
+webrtcAdditionalHosts: [172.17.113.53]
 
 hlsAddress: :8888
 

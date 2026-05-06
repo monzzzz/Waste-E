@@ -16,6 +16,7 @@ import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -41,7 +42,7 @@ DRIVE_ACTIONS = {"forward", "backward", "left", "right", "stop"}
 RECORDINGS_DIR = pathlib.Path(
     os.getenv(
         "RECORDINGS_DIR",
-        str(pathlib.Path(__file__).parent / "rasppi" / "recordings"),
+        str(pathlib.Path(__file__).parent / "recordings"),
     )
 )
 
@@ -120,6 +121,14 @@ def _make_drive_urls(device_info: dict[str, Any]) -> list[str]:
         ports.append(ORANGE_DASH_PORT)
 
     return [f"http://{ip}:{port}/api/drive" for port in ports]
+
+
+def _make_device_api_url(device_info: dict[str, Any], path: str) -> str:
+    ip = device_info.get("ip")
+    port = device_info.get("cam_port")
+    if not ip or not port:
+        return ""
+    return f"http://{ip}:{port}{path}"
 
 
 def _device_status(device_info: dict[str, Any]) -> str:
@@ -270,6 +279,66 @@ def _decode_json_bytes(raw: bytes) -> dict[str, Any]:
         return {"value": data}
     except json.JSONDecodeError:
         return {"raw": text[:400]}
+
+
+def _post_json(url: str, payload: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        result = _decode_json_bytes(resp.read())
+        result.setdefault("http_status", resp.getcode())
+        return result
+
+
+def _recording_targets() -> list[tuple[str, str]]:
+    with _device_lock:
+        items = list(_devices.items())
+
+    targets: list[tuple[str, str]] = []
+    for device, info in items:
+        if device not in ("orangepi", "rasppi"):
+            continue
+        if _device_status(info) != "online":
+            continue
+        url = _make_device_api_url(info, "/api/recording")
+        if url:
+            targets.append((device, url))
+    return targets
+
+
+def _start_device_recordings(
+    session_id: str,
+    upload_url: str,
+    targets: list[tuple[str, str]],
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for device, base_url in targets:
+        try:
+            response = _post_json(
+                f"{base_url}/start",
+                {"session": session_id, "upload_url": upload_url},
+                timeout=5.0,
+            )
+            results.append({"device": device, "ok": True, "response": response})
+        except Exception as exc:
+            results.append({"device": device, "ok": False, "error": str(exc)})
+    return results
+
+
+def _stop_device_recordings(session_id: str, targets: list[tuple[str, str]] | None = None) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for device, base_url in targets or _recording_targets():
+        try:
+            response = _post_json(f"{base_url}/stop", {"session": session_id}, timeout=1800.0)
+            results.append({"device": device, "ok": True, "response": response})
+        except Exception as exc:
+            results.append({"device": device, "ok": False, "error": str(exc)})
+    return results
 
 
 @app.route("/api/register", methods=["POST"])
@@ -604,6 +673,7 @@ def api_recording_start() -> Response:
         session_dir = RECORDINGS_DIR / ts
         session_dir.mkdir(parents=True, exist_ok=True)
         (session_dir / "videos").mkdir(exist_ok=True)
+        upload_url = urllib.parse.urljoin(request.host_url, "api/recording/video")
 
         with _device_lock:
             summary = _build_summary_locked()
@@ -614,6 +684,7 @@ def api_recording_start() -> Response:
             "started_at_iso": datetime.datetime.now().isoformat(),
             "cameras": summary.get("cameras", []),
             "devices": summary.get("devices", {}),
+            "device_upload_url": upload_url,
         }
         (session_dir / "session.json").write_text(json.dumps(meta, indent=2))
 
@@ -637,7 +708,25 @@ def api_recording_start() -> Response:
         }
         worker.start()
 
-    return jsonify({"ok": True, "session": ts, "dir": str(session_dir)})
+    device_targets = _recording_targets()
+    device_results = _start_device_recordings(ts, upload_url, device_targets)
+    with _recording_lock:
+        if _recording_session and _recording_session["id"] == ts:
+            _recording_session["device_start_results"] = device_results
+            _recording_session["device_targets"] = [
+                {"device": device, "url": url} for device, url in device_targets
+            ]
+
+    session_file = session_dir / "session.json"
+    if session_file.exists():
+        meta = json.loads(session_file.read_text())
+        meta["device_recording_start"] = device_results
+        meta["device_recording_targets"] = [
+            {"device": device, "url": url} for device, url in device_targets
+        ]
+        session_file.write_text(json.dumps(meta, indent=2))
+
+    return jsonify({"ok": True, "session": ts, "dir": str(session_dir), "devices": device_results})
 
 
 @app.route("/api/recording/stop", methods=["POST"])
@@ -647,10 +736,19 @@ def api_recording_stop() -> Response:
         if _recording_session is None:
             return jsonify({"ok": False, "error": "not recording"}), 409
         sess = _recording_session
-        _recording_session = None
 
     sess["_stop_event"].set()
     sess["_worker"].join(timeout=2.0)
+    device_targets = [
+        (str(item.get("device")), str(item.get("url")))
+        for item in sess.get("device_targets", [])
+        if isinstance(item, dict) and item.get("device") and item.get("url")
+    ]
+    device_results = _stop_device_recordings(sess["id"], device_targets or None)
+
+    with _recording_lock:
+        if _recording_session and _recording_session["id"] == sess["id"]:
+            _recording_session = None
 
     coords = sess["gps_coords"]
     if coords:
@@ -672,7 +770,11 @@ def api_recording_stop() -> Response:
         meta["duration_s"] = time.time() - sess["started_at"]
         meta["telemetry_rows"] = sess["row_count"]
         meta["gps_points"] = len(coords)
+        meta["device_recording_stop"] = device_results
         session_file.write_text(json.dumps(meta, indent=2))
+
+    videos_dir = pathlib.Path(sess["dir"]) / "videos"
+    video_count = len([p for p in videos_dir.iterdir() if p.is_file()]) if videos_dir.exists() else 0
 
     return jsonify({
         "ok": True,
@@ -680,6 +782,8 @@ def api_recording_stop() -> Response:
         "dir": sess["dir"],
         "rows": sess["row_count"],
         "gps_points": len(coords),
+        "videos": video_count,
+        "devices": device_results,
     })
 
 
@@ -708,21 +812,39 @@ def api_recording_video() -> Response:
 
     if sess is None:
         return jsonify({"error": "no active session"}), 409
+    expected_session = request.args.get("session", "").strip()
+    if expected_session and expected_session != sess["id"]:
+        return jsonify({"error": "session mismatch", "session": sess["id"]}), 409
 
     ext = "webm"
     ct = request.content_type or ""
-    if "mp4" in ct:
+    filename = request.args.get("filename", "").strip()
+    suffix = pathlib.Path(filename).suffix.lower().lstrip(".") if filename else ""
+    if suffix in {"mp4", "webm", "mkv", "mov"}:
+        ext = suffix
+    elif "matroska" in ct or "mkv" in ct:
+        ext = "mkv"
+    elif "mp4" in ct:
         ext = "mp4"
 
     safe_cam = "".join(c for c in cam_id if c.isalnum() or c in "-_")
+    device = request.args.get("device", "").strip().lower()
+    safe_device = "".join(c for c in device if c.isalnum() or c in "-_")
+    if safe_device and not safe_cam.startswith(f"{safe_device}-"):
+        safe_cam = f"{safe_device}-{safe_cam}"
     dest = pathlib.Path(sess["dir"]) / "videos" / f"{safe_cam}.{ext}"
     try:
-        dest.write_bytes(request.data)
+        with open(dest, "wb") as fh:
+            while True:
+                chunk = request.stream.read(1024 * 1024)
+                if not chunk:
+                    break
+                fh.write(chunk)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
-    # If the browser sent WebM, remux to MP4 with ffmpeg (no re-encode, fast)
-    if ext == "webm":
+    # Remux browser WebM or device MKV to MP4 when possible (no re-encode, fast).
+    if ext in {"webm", "mkv"}:
         mp4_dest = dest.with_suffix(".mp4")
         try:
             subprocess.run(
@@ -2552,40 +2674,10 @@ async function startRecording() {
   _mediaRecorders = [];
   _recChunks = {};
 
-  // WebRTC streams — pull directly from _peerConns so we don't miss cams
-  // where srcObject was set before the video element rendered.
-  // Clone the track so stopping the recorder never kills the live stream.
-  for (const [camId, pc] of Object.entries(_peerConns)) {
-    if (!pc || typeof pc.getReceivers !== 'function') continue;
-    const receiver = pc.getReceivers().find(r => r.track && r.track.kind === 'video');
-    if (!receiver) continue;
-    const stream = new MediaStream([receiver.track.clone()]);
-    _startCamRecorder(stream, camId);
-  }
-
-  // MJPEG img streams — canvas capture for cameras not already covered by WebRTC
-  document.querySelectorAll('#cams-grid img').forEach((img) => {
-    const card = img.closest('.cam-card');
-    const camId = card ? card.dataset.camid : null;
-    if (!camId || _recChunks[camId] !== undefined) return;
-    const w = img.offsetWidth || 640;
-    const h = img.offsetHeight || 480;
-    const canvas = document.createElement('canvas');
-    canvas.width = w; canvas.height = h;
-    const ctx2 = canvas.getContext('2d');
-    const intervalId = setInterval(() => {
-      if (!_recActive) { clearInterval(intervalId); return; }
-      try { ctx2.drawImage(img, 0, 0, w, h); } catch(_) {}
-    }, 67);
-    const stream = canvas.captureStream(15);
-    _startCamRecorder(stream, camId);
-    _mediaRecorders[_mediaRecorders.length - 1]._interval = intervalId;
-  });
-
-  const camCount = Object.keys(_recChunks).length;
+  const devices = (data.devices || []).filter(d => d.ok).map(d => d.device);
   const btn = document.getElementById('rec-btn');
   btn.classList.add('recording');
-  document.getElementById('rec-label').textContent = `STOP (${camCount} cam${camCount !== 1 ? 's' : ''})`;
+  document.getElementById('rec-label').textContent = devices.length ? `STOP (${devices.join('+')})` : 'STOP';
   _recElapsedTimer = setInterval(() => {
     document.getElementById('rec-elapsed').textContent = _recElapsedStr();
   }, 1000);
@@ -2595,37 +2687,8 @@ async function startRecording() {
 async function stopRecording() {
   _recActive = false;
   clearInterval(_recElapsedTimer);
-
-  // Stop all MediaRecorders and collect blobs
-  const downloads = [];
-  for (const entry of _mediaRecorders) {
-    if (entry._interval) clearInterval(entry._interval);
-    if (entry.mr.state !== 'inactive') {
-      await new Promise((resolve) => { entry.mr.onstop = resolve; entry.mr.stop(); });
-    }
-    const chunks = _recChunks[entry.camId] || [];
-    if (chunks.length > 0) {
-      downloads.push({ camId: entry.camId, blob: new Blob(chunks, { type: chunks[0].type || 'video/webm' }) });
-    }
-  }
   _mediaRecorders = [];
   _recChunks = {};
-
-  // Upload videos FIRST while the session is still active on the server,
-  // then stop the session so it can finalize session.json with correct counts.
-  const uploadResults = await Promise.all(downloads.map(async ({ camId, blob }) => {
-    try {
-      const r = await fetch(`/api/recording/video?cam=${encodeURIComponent(camId)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': blob.type || 'video/webm' },
-        body: blob,
-      });
-      const j = await r.json().catch(() => ({}));
-      return { camId, ok: r.ok, file: j.file, error: j.error };
-    } catch(e) {
-      return { camId, ok: false, error: e.message };
-    }
-  }));
 
   let resp, data;
   try {
@@ -2639,15 +2702,15 @@ async function stopRecording() {
   document.getElementById('rec-elapsed').textContent = '';
 
   if (data.ok) {
-    const failed = uploadResults.filter(r => !r.ok).map(r => r.camId);
+    const failed = (data.devices || []).filter(r => !r.ok).map(r => r.device);
     const lines = [
       `Session: ${data.session}`,
       `Saved to: ${data.dir}`,
       `Telemetry rows: ${data.rows}`,
       `GPS points: ${data.gps_points}`,
-      `Videos saved: ${uploadResults.filter(r => r.ok).length} / ${downloads.length}`,
+      `Video files: ${data.videos || 0}`,
     ];
-    if (failed.length) lines.push(`Failed uploads: ${failed.join(', ')}`);
+    if (failed.length) lines.push(`Device stop/upload failed: ${failed.join(', ')}`);
     alert('Recording saved!\n\n' + lines.join('\n'));
   }
 
