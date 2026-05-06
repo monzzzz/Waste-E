@@ -787,7 +787,7 @@ def api_speed():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Orange Pi data sender")
-    parser.add_argument("--server", default="http://192.168.1.100:9000", help="Central dashboard server URL")
+    parser.add_argument("--server", default="http://192.168.112.254:9000", help="Central dashboard server URL")
     parser.add_argument("--my-ip", default="192.168.1.10", help="This device's IP address")
     parser.add_argument(
         "--dashboard",
