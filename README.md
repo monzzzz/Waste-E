@@ -3,7 +3,7 @@
 Autonomous AI + robotics stack for sidewalk garbage collection.
 
 <p align="center">
-  <img src="assets/images/waste-e-robot.jpg" alt="Waste-E robot platform" width="860">
+  <img src="assets/images/waste-e-robot.jpg" alt="Waste-E robot platform" width=300"">
 </p>
 
 Waste-E combines:
