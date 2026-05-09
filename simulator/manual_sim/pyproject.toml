@@ -1,0 +1,19 @@
+[project]
+name = "waste-e-manual-sim"
+version = "0.1.0"
+description = "Offline replay evaluator for Waste-E recording sessions"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26.0",
+    "opencv-python-headless>=4.10.0.84",
+]
+
+[project.optional-dependencies]
+runpod = [
+    "requests>=2.32.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

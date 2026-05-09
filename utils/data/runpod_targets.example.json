@@ -1,0 +1,17 @@
+{
+  "targets": {
+    "a100": {
+      "host": "your-runpod-host-or-ip",
+      "user": "root",
+      "port": 22,
+      "base_path": "/workspace/data/waste-e-recordings",
+      "ssh_key": "~/.ssh/id_ed25519"
+    },
+    "backup": {
+      "host": "another-runpod-host-or-ip",
+      "user": "root",
+      "port": 22,
+      "base_path": "/workspace/data/waste-e-recordings"
+    }
+  }
+}

@@ -29,5 +29,6 @@ sit_dataset
 output_carla
 
 hardware/recordings/
+utils/data/runpod_targets.json
 __pycache__/
 *.pyc
